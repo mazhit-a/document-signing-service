@@ -1,4 +1,3 @@
-// Package http contains the HTTP transport: router, middleware, handlers.
 package http
 
 import (
@@ -7,15 +6,12 @@ import (
 	"net/http"
 )
 
-// Options configures the router.
 type Options struct {
 	Logger            *slog.Logger
 	CORSAllowedOrigin string
 	MaxBodyBytes      int64
 }
 
-// NewRouter builds the root handler with the middleware chain:
-// request ID -> access log -> panic recovery -> CORS -> body limit.
 func NewRouter(opts Options) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)

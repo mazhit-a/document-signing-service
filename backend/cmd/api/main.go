@@ -1,4 +1,3 @@
-// Command api is the Mini-KEDO HTTP server.
 package main
 
 import (
@@ -23,7 +22,6 @@ const (
 	idleTimeout       = 120 * time.Second
 	shutdownTimeout   = 15 * time.Second
 
-	// multipartOverhead leaves room for multipart framing on top of the file limit.
 	multipartOverhead = 1 << 20
 )
 

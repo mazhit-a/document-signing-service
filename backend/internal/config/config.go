@@ -1,5 +1,3 @@
-// Package config parses and validates environment configuration.
-// It fails fast: Load returns an error describing every problem found.
 package config
 
 import (
@@ -12,13 +10,11 @@ import (
 
 const minSecretBytes = 32
 
-// Placeholder secrets shipped in .env.example. They are only acceptable in dev.
 const (
 	PlaceholderJWTSecret  = "change-me-at-least-32-bytes-long"
 	PlaceholderSealSecret = "change-me-another-32-bytes-secret"
 )
 
-// Config holds all runtime settings.
 type Config struct {
 	AppEnv            string
 	HTTPAddr          string
@@ -33,10 +29,8 @@ type Config struct {
 	WebhookWorkers    int
 }
 
-// IsDev reports whether the app runs in the dev environment.
 func (c Config) IsDev() bool { return c.AppEnv == "dev" }
 
-// Load reads configuration using getenv (usually os.Getenv).
 func Load(getenv func(string) string) (Config, error) {
 	var errs []error
 	str := func(key, def string) string {
@@ -96,9 +90,6 @@ func Load(getenv func(string) string) (Config, error) {
 	return cfg, nil
 }
 
-// secret reads a secret. In dev a missing value falls back to the placeholder
-// and weak values are tolerated; elsewhere it must be set, long enough and
-// must not be a placeholder.
 func secret(getenv func(string) string, key, placeholder string, dev bool, errs *[]error) string {
 	v := getenv(key)
 	if dev {

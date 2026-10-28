@@ -28,7 +28,7 @@ func TestLoadSecrets(t *testing.T) {
 	tests := []struct {
 		name    string
 		env     map[string]string
-		wantErr string // substring; empty means success
+		wantErr string
 	}{
 		{"dev missing secrets accepted", map[string]string{"APP_ENV": "dev"}, ""},
 		{"dev placeholder accepted", map[string]string{"APP_ENV": "dev", "JWT_SECRET": PlaceholderJWTSecret, "SEAL_SECRET": PlaceholderSealSecret}, ""},

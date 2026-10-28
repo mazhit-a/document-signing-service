@@ -32,7 +32,6 @@ func logLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
 }
 
 func newTestRouter(buf *bytes.Buffer, extra func(*http.ServeMux)) http.Handler {
-	// Reuse the real chain by wrapping a custom mux the same way NewRouter does.
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
 	if extra != nil {
@@ -112,7 +111,6 @@ func TestPanicYields500Internal(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "secret detail") {
 		t.Fatal("panic value leaked to client")
 	}
-	// access log must still record 500 with request_id
 	var sawAccess bool
 	for _, l := range logLines(t, &buf) {
 		if l["request_id"] == nil {

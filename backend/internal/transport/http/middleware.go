@@ -20,13 +20,11 @@ const (
 
 const requestIDHeader = "X-Request-ID"
 
-// RequestIDFrom returns the request id stored by the RequestID middleware.
 func RequestIDFrom(ctx context.Context) string {
 	id, _ := ctx.Value(ctxRequestID).(string)
 	return id
 }
 
-// LoggerFrom returns a logger already carrying the request_id attribute.
 func LoggerFrom(ctx context.Context) *slog.Logger {
 	if l, ok := ctx.Value(ctxLogger).(*slog.Logger); ok {
 		return l
@@ -38,12 +36,10 @@ var validRequestID = regexp.MustCompile(`^[A-Za-z0-9._-]{8,64}$`)
 
 func newRequestID() string {
 	b := make([]byte, 16)
-	_, _ = rand.Read(b) // crypto/rand.Read never returns an error on supported platforms
+	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
 }
 
-// RequestID assigns each request an id (reusing a sane inbound one), exposes it
-// in the response header and stores it plus a derived logger in the context.
 func RequestID(base *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -61,7 +57,6 @@ func RequestID(base *slog.Logger) func(http.Handler) http.Handler {
 
 var signTokenPath = regexp.MustCompile(`(/sign/)[^/]+`)
 
-// RedactPath hides one-time signing tokens: /sign/<token>/x -> /sign/[redacted]/x.
 func RedactPath(p string) string {
 	return signTokenPath.ReplaceAllString(p, "${1}[redacted]")
 }
@@ -88,10 +83,8 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 	return s.ResponseWriter.Write(b)
 }
 
-// Unwrap lets http.ResponseController reach the underlying writer.
 func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
-// AccessLog logs one line per request. Must run inside RequestID.
 func AccessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -106,8 +99,6 @@ func AccessLog(next http.Handler) http.Handler {
 	})
 }
 
-// Recover turns panics into a 500 `internal` JSON error. Stack traces are
-// logged, never sent to the client.
 func Recover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
@@ -115,7 +106,7 @@ func Recover(next http.Handler) http.Handler {
 			if rv == nil {
 				return
 			}
-			if rv == http.ErrAbortHandler { //nolint:errorlint // sentinel compared by identity per net/http docs
+			if rv == http.ErrAbortHandler {
 				panic(rv)
 			}
 			LoggerFrom(r.Context()).Error("panic recovered",
@@ -129,7 +120,6 @@ func Recover(next http.Handler) http.Handler {
 	})
 }
 
-// CORS allows exactly one configured origin.
 func CORS(allowedOrigin string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -152,7 +142,6 @@ func CORS(allowedOrigin string) func(http.Handler) http.Handler {
 	}
 }
 
-// BodyLimit caps request bodies; reads beyond maxBytes fail with *http.MaxBytesError.
 func BodyLimit(maxBytes int64) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
