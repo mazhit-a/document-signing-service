@@ -84,3 +84,58 @@ export interface SignerInput {
   full_name: string
   email: string
 }
+
+export interface SigningLink {
+  signer_id: string
+  order: number
+  url: string
+  note: string
+}
+
+export interface SendResponse {
+  status: DocumentStatus
+  signing_links: SigningLink[]
+}
+
+export interface CancelResponse {
+  id: string
+  status: DocumentStatus
+  updated_at: string
+}
+
+export interface AuditEvent {
+  id: number
+  type: string
+  actor: string
+  data: Record<string, unknown>
+  prev_hash: string
+  hash: string
+  created_at: string
+}
+
+export interface AuditEventList {
+  items: AuditEvent[]
+}
+
+export interface VerifySignatureCheck {
+  signer_id: string
+  order: number
+  seal_ok: boolean
+  hash_matches_document: boolean
+}
+
+export interface VerifyReport {
+  valid: boolean
+  checked_at: string
+  file: {
+    ok: boolean
+    expected_sha256: string
+    actual_sha256: string
+  }
+  signatures: VerifySignatureCheck[]
+  audit_chain: {
+    ok: boolean
+    events: number
+    first_broken_event_id: number | null
+  }
+}

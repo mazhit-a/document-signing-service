@@ -1,6 +1,7 @@
 import { Navigate, type RouteObject } from 'react-router-dom'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { RouteError } from './components/RouteError'
+import { DocumentDetailPage } from './pages/DocumentDetailPage'
 import { DocumentsPage } from './pages/DocumentsPage'
 import { NewDocumentPage } from './pages/NewDocumentPage'
 import { LoginPage } from './pages/LoginPage'
@@ -19,6 +20,7 @@ export const appRoutes: RouteObject[] = [
         children: [
           { path: '/documents', element: <DocumentsPage /> },
           { path: '/documents/new', element: <NewDocumentPage /> },
+          { path: '/documents/:id', element: <DocumentDetailPage /> },
         ],
       },
       { path: '*', element: <NotFoundPage /> },
