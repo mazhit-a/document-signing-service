@@ -73,3 +73,14 @@ export interface ErrorEnvelope {
     fields: Record<string, string>
   }
 }
+
+export interface DocumentListResponse {
+  items: DocumentDetail[]
+  next_cursor: string | null
+  has_more: boolean
+}
+
+export interface SignerInput {
+  full_name: string
+  email: string
+}
