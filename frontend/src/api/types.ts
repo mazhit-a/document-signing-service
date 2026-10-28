@@ -139,3 +139,31 @@ export interface VerifyReport {
     first_broken_event_id: number | null
   }
 }
+
+export interface SignDocumentInfo {
+  title: string
+  file_name: string
+  size_bytes: number
+  sha256: string
+  status: DocumentStatus
+}
+
+export interface SignSignerInfo {
+  full_name: string
+  order: number
+  total: number
+  status: SignerStatus
+}
+
+export interface SigningView {
+  document: SignDocumentInfo
+  signer: SignSignerInfo
+  can_act: boolean
+}
+
+export interface DecisionResult {
+  signer_status: SignerStatus
+  document_status: DocumentStatus
+  signed_at: string
+  seal?: string
+}

@@ -7,6 +7,7 @@ import { NewDocumentPage } from './pages/NewDocumentPage'
 import { LoginPage } from './pages/LoginPage'
 import { NotFoundPage } from './pages/NotFoundPage'
 import { RegisterPage } from './pages/RegisterPage'
+import { SigningPage } from './pages/SigningPage'
 
 export const appRoutes: RouteObject[] = [
   {
@@ -15,6 +16,7 @@ export const appRoutes: RouteObject[] = [
       { path: '/', element: <Navigate to="/documents" replace /> },
       { path: '/login', element: <LoginPage /> },
       { path: '/register', element: <RegisterPage /> },
+      { path: '/sign/:token', element: <SigningPage /> },
       {
         element: <ProtectedRoute />,
         children: [
