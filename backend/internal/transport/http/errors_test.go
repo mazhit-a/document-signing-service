@@ -37,6 +37,7 @@ func TestWriteErrorMapping(t *testing.T) {
 		{"not your turn", domain.ErrNotYourTurn, 409, "not_your_turn"},
 		{"document closed", domain.ErrDocumentClosed, 409, "document_closed"},
 		{"email taken", domain.ErrEmailTaken, 409, "email_taken"},
+		{"rate limited", domain.ErrRateLimited, 429, "rate_limited"},
 		{"wrapped sentinel", fmt.Errorf("load document: %w", domain.ErrNotFound), 404, "not_found"},
 		{"wrapped validation", fmt.Errorf("create: %w", domain.NewValidationError(map[string]string{"title": "x"})), 400, "validation_failed"},
 		{"unknown", errors.New("pq: connection refused at 10.0.0.5"), 500, "internal"},

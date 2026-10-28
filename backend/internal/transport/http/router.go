@@ -16,17 +16,25 @@ type Options struct {
 	Lifecycle         LifecycleUseCase
 	Signing           SigningUseCase
 	Verify            VerifyUseCase
+	ReadyChecks       map[string]ReadyCheck
+	LoginLimiter      *Limiter
+	SignLimiter       *Limiter
+	TrustProxy        bool
 }
 
 func NewRouter(opts Options) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
+	if len(opts.ReadyChecks) > 0 {
+		mux.HandleFunc("GET /readyz", readyz(opts.ReadyChecks))
+	}
 
 	if opts.Auth != nil && opts.Tokens != nil {
 		auth := NewAuthHandlers(opts.Auth)
 		requireAuth := RequireAuth(opts.Tokens)
 		mux.HandleFunc("POST /api/v1/auth/register", auth.Register)
-		mux.HandleFunc("POST /api/v1/auth/login", auth.Login)
+		limitLogin := RateLimit(opts.LoginLimiter, opts.TrustProxy)
+		mux.Handle("POST /api/v1/auth/login", limitLogin(http.HandlerFunc(auth.Login)))
 		mux.Handle("GET /api/v1/me", requireAuth(http.HandlerFunc(auth.Me)))
 	}
 
@@ -55,10 +63,11 @@ func NewRouter(opts Options) http.Handler {
 
 	if opts.Signing != nil {
 		sign := NewSigningHandlers(opts.Signing)
-		mux.HandleFunc("GET /api/v1/sign/{token}", sign.View)
-		mux.HandleFunc("GET /api/v1/sign/{token}/file", sign.File)
-		mux.HandleFunc("POST /api/v1/sign/{token}/approve", sign.Approve)
-		mux.HandleFunc("POST /api/v1/sign/{token}/reject", sign.Reject)
+		limitSign := RateLimit(opts.SignLimiter, opts.TrustProxy)
+		mux.Handle("GET /api/v1/sign/{token}", limitSign(http.HandlerFunc(sign.View)))
+		mux.Handle("GET /api/v1/sign/{token}/file", limitSign(http.HandlerFunc(sign.File)))
+		mux.Handle("POST /api/v1/sign/{token}/approve", limitSign(http.HandlerFunc(sign.Approve)))
+		mux.Handle("POST /api/v1/sign/{token}/reject", limitSign(http.HandlerFunc(sign.Reject)))
 	}
 
 	var h http.Handler = mux

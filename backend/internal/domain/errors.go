@@ -16,6 +16,7 @@ var (
 	ErrBadRequest          = errors.New("bad request")
 	ErrFileTooLarge        = errors.New("file too large")
 	ErrUnsupportedFileType = errors.New("unsupported file type")
+	ErrRateLimited         = errors.New("rate limited")
 )
 
 type ValidationError struct {

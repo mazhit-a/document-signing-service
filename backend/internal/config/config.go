@@ -27,6 +27,7 @@ type Config struct {
 	PublicWebURL      string
 	CORSAllowedOrigin string
 	WebhookWorkers    int
+	TrustProxy        bool
 }
 
 func (c Config) IsDev() bool { return c.AppEnv == "dev" }
@@ -74,6 +75,12 @@ func Load(getenv func(string) string) (Config, error) {
 		errs = append(errs, errors.New("WEBHOOK_WORKERS must be a non-negative integer"))
 	}
 	cfg.WebhookWorkers = workers
+
+	trust, err := strconv.ParseBool(str("TRUST_PROXY", "false"))
+	if err != nil {
+		errs = append(errs, errors.New("TRUST_PROXY must be true or false"))
+	}
+	cfg.TrustProxy = trust
 
 	switch cfg.AppEnv {
 	case "dev", "staging", "prod":

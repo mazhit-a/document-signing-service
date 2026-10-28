@@ -30,6 +30,22 @@ func New(root string) (*Storage, error) {
 	return &Storage{root: abs}, nil
 }
 
+func (s *Storage) Check(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(s.root, ".ready-*")
+	if err != nil {
+		return fmt.Errorf("storage not writable: %w", err)
+	}
+	name := f.Name()
+	_ = f.Close()
+	if err := os.Remove(name); err != nil {
+		return fmt.Errorf("storage cleanup: %w", err)
+	}
+	return nil
+}
+
 func newKey() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {

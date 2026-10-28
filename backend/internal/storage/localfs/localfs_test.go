@@ -162,3 +162,24 @@ func TestPutCancelledContext(t *testing.T) {
 		t.Fatalf("want empty root, got %d entries", len(entries))
 	}
 }
+
+func TestCheck(t *testing.T) {
+	s, root := newStore(t)
+	if err := s.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("Check left %d files behind", len(entries))
+	}
+
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Check(context.Background()); err == nil {
+		t.Fatal("expected error when storage dir is gone")
+	}
+}

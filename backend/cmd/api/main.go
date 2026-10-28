@@ -29,6 +29,11 @@ const (
 	shutdownTimeout   = 15 * time.Second
 
 	multipartOverhead = 1 << 20
+
+	loginBurst  = 10
+	loginRefill = 6 * time.Second
+	signBurst   = 60
+	signRefill  = time.Second
 )
 
 func main() {
@@ -115,6 +120,13 @@ func run() error {
 			Lifecycle:         lifecycleSvc,
 			Signing:           signingSvc,
 			Verify:            verifySvc,
+			ReadyChecks: map[string]transport.ReadyCheck{
+				"database": pool.Ping,
+				"storage":  files.Check,
+			},
+			LoginLimiter: transport.NewLimiter(loginBurst, loginRefill, nil),
+			SignLimiter:  transport.NewLimiter(signBurst, signRefill, nil),
+			TrustProxy:   cfg.TrustProxy,
 		}),
 		ReadTimeout:       readTimeout,
 		ReadHeaderTimeout: readHeaderTimeout,

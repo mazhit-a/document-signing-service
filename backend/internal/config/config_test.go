@@ -80,6 +80,7 @@ func TestLoadInvalidValues(t *testing.T) {
 		{"bad ttl", map[string]string{"JWT_TTL": "soon"}, "JWT_TTL"},
 		{"bad upload", map[string]string{"MAX_UPLOAD_BYTES": "-1"}, "MAX_UPLOAD_BYTES"},
 		{"bad workers", map[string]string{"WEBHOOK_WORKERS": "x"}, "WEBHOOK_WORKERS"},
+		{"bad trust proxy", map[string]string{"TRUST_PROXY": "maybe"}, "TRUST_PROXY"},
 		{"bad env", map[string]string{"APP_ENV": "qa"}, "APP_ENV"},
 	}
 	for _, tt := range tests {

@@ -37,6 +37,8 @@ func MapError(err error) mappedError {
 		return mappedError{http.StatusRequestEntityTooLarge, "file_too_large", "file exceeds the size limit", nil}
 	case errors.Is(err, domain.ErrUnsupportedFileType):
 		return mappedError{http.StatusBadRequest, "unsupported_file_type", "file type is not supported", nil}
+	case errors.Is(err, domain.ErrRateLimited):
+		return mappedError{http.StatusTooManyRequests, "rate_limited", "too many requests, retry later", nil}
 	case errors.Is(err, domain.ErrBadRequest):
 		return mappedError{http.StatusBadRequest, "bad_request", "malformed request", nil}
 	}
