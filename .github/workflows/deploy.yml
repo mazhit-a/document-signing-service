@@ -26,6 +26,7 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_KEY }}
           script_stop: true
+          command_timeout: 30m
           script: |
             cd /opt/kedo
             git fetch origin main
