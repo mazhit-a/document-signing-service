@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/mazhit-a/mini-kedo/internal/config"
+	"github.com/mazhit-a/mini-kedo/internal/repository/postgres"
 	transport "github.com/mazhit-a/mini-kedo/internal/transport/http"
+	"github.com/mazhit-a/mini-kedo/migrations"
 )
 
 const (
@@ -43,6 +45,15 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if err := postgres.MigrateUp(cfg.DatabaseURL, migrations.FS); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
 
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,

@@ -1,0 +1,11 @@
+DROP TRIGGER IF EXISTS documents_file_immutable ON documents;
+DROP FUNCTION IF EXISTS documents_file_immutable();
+DROP TRIGGER IF EXISTS audit_events_no_update_delete ON audit_events;
+DROP FUNCTION IF EXISTS audit_events_append_only();
+DROP TABLE IF EXISTS audit_events;
+DROP TABLE IF EXISTS signatures;
+DROP TABLE IF EXISTS signers;
+DROP TABLE IF EXISTS documents;
+DROP TABLE IF EXISTS users;
+DROP TYPE IF EXISTS signer_status;
+DROP TYPE IF EXISTS document_status;
