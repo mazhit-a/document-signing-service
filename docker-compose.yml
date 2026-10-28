@@ -52,8 +52,10 @@ services:
     ports:
       - "${WEB_PORT:-8081}:80"
     depends_on:
-      - api
-      - seed
+      api:
+        condition: service_started
+      seed:
+        condition: service_completed_successfully
     restart: unless-stopped
 
 volumes:
