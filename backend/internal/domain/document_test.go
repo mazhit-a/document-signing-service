@@ -264,6 +264,11 @@ func TestRejectAfterSignedOrClosed(t *testing.T) {
 	if err := d.Reject(d.Signers[0].ID, "late", t0); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("signed signer reject: %v", err)
 	}
+	_, _ = d.Approve(d.Signers[1].ID, t0)
+	if err := d.Reject(d.Signers[0].ID, "late", t0); !errors.Is(err, ErrDocumentClosed) {
+		t.Fatalf("signed signer reject on completed doc: %v", err)
+	}
+	d = newDoc(t, 2, DocumentInProgress)
 	_ = d.Cancel(t0)
 	if err := d.Reject(d.Signers[1].ID, "late", t0); !errors.Is(err, ErrDocumentClosed) {
 		t.Fatalf("cancelled doc reject: %v", err)

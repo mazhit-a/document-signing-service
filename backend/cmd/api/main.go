@@ -90,6 +90,13 @@ func run() error {
 		postgres.NewAuditRepository(pool),
 		txm, clock, notify.NewLogNotifier(logger), cfg.PublicWebURL)
 
+	signingSvc := service.NewSigningService(
+		postgres.NewDocumentRepository(pool, txm),
+		postgres.NewSignerRepository(pool),
+		postgres.NewSignatureRepository(pool),
+		postgres.NewAuditRepository(pool),
+		files, txm, clock, service.UUIDGenerator{}, notify.NewLogNotifier(logger), []byte(cfg.SealSecret))
+
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
 		Handler: transport.NewRouter(transport.Options{
@@ -100,6 +107,7 @@ func run() error {
 			Tokens:            tokens,
 			Documents:         docSvc,
 			Lifecycle:         lifecycleSvc,
+			Signing:           signingSvc,
 		}),
 		ReadTimeout:       readTimeout,
 		ReadHeaderTimeout: readHeaderTimeout,

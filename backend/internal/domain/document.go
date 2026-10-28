@@ -183,6 +183,9 @@ func (d *Document) Reject(signerID, reason string, now time.Time) error {
 		return err
 	}
 	if s.Status == SignerSigned {
+		if d.Status.IsTerminal() {
+			return ErrDocumentClosed
+		}
 		return ErrInvalidState
 	}
 	if err := d.checkCanAct(s); err != nil {

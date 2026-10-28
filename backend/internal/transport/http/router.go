@@ -14,6 +14,7 @@ type Options struct {
 	Tokens            TokenParser
 	Documents         DocumentUseCase
 	Lifecycle         LifecycleUseCase
+	Signing           SigningUseCase
 }
 
 func NewRouter(opts Options) http.Handler {
@@ -43,6 +44,14 @@ func NewRouter(opts Options) http.Handler {
 		mux.Handle("POST /api/v1/documents/{id}/send", requireAuth(http.HandlerFunc(life.Send)))
 		mux.Handle("POST /api/v1/documents/{id}/cancel", requireAuth(http.HandlerFunc(life.Cancel)))
 		mux.Handle("GET /api/v1/documents/{id}/events", requireAuth(http.HandlerFunc(life.Events)))
+	}
+
+	if opts.Signing != nil {
+		sign := NewSigningHandlers(opts.Signing)
+		mux.HandleFunc("GET /api/v1/sign/{token}", sign.View)
+		mux.HandleFunc("GET /api/v1/sign/{token}/file", sign.File)
+		mux.HandleFunc("POST /api/v1/sign/{token}/approve", sign.Approve)
+		mux.HandleFunc("POST /api/v1/sign/{token}/reject", sign.Reject)
 	}
 
 	var h http.Handler = mux
