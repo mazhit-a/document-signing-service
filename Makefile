@@ -8,7 +8,7 @@ CORS_ALLOWED_ORIGIN ?= http://localhost:5173
 
 export POSTGRES_PORT DATABASE_URL PUBLIC_WEB_URL CORS_ALLOWED_ORIGIN
 
-.PHONY: up down migrate migrate-down dev-api test-backend
+.PHONY: up down migrate migrate-down dev-api dev-web test-backend test-web
 
 up:
 	docker compose up -d --wait postgres
@@ -27,3 +27,9 @@ dev-api:
 
 test-backend:
 	cd backend && TEST_DATABASE_URL=$(DATABASE_URL) go test -race ./...
+
+dev-web:
+	cd frontend && npm run dev
+
+test-web:
+	cd frontend && npm run lint && npm run typecheck && npm test
