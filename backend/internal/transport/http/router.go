@@ -10,11 +10,21 @@ type Options struct {
 	Logger            *slog.Logger
 	CORSAllowedOrigin string
 	MaxBodyBytes      int64
+	Auth              AuthUseCase
+	Tokens            TokenParser
 }
 
 func NewRouter(opts Options) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
+
+	if opts.Auth != nil && opts.Tokens != nil {
+		auth := NewAuthHandlers(opts.Auth)
+		requireAuth := RequireAuth(opts.Tokens)
+		mux.HandleFunc("POST /api/v1/auth/register", auth.Register)
+		mux.HandleFunc("POST /api/v1/auth/login", auth.Login)
+		mux.Handle("GET /api/v1/me", requireAuth(http.HandlerFunc(auth.Me)))
+	}
 
 	var h http.Handler = mux
 	h = BodyLimit(opts.MaxBodyBytes)(h)

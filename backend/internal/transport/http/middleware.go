@@ -16,7 +16,13 @@ type ctxKey int
 const (
 	ctxRequestID ctxKey = iota
 	ctxLogger
+	ctxRequestState
+	ctxUserID
 )
+
+type requestState struct {
+	userID string
+}
 
 const requestIDHeader = "X-Request-ID"
 
@@ -50,6 +56,7 @@ func RequestID(base *slog.Logger) func(http.Handler) http.Handler {
 			w.Header().Set(requestIDHeader, id)
 			ctx := context.WithValue(r.Context(), ctxRequestID, id)
 			ctx = context.WithValue(ctx, ctxLogger, base.With("request_id", id))
+			ctx = context.WithValue(ctx, ctxRequestState, &requestState{})
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -90,12 +97,16 @@ func AccessLog(next http.Handler) http.Handler {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
-		LoggerFrom(r.Context()).Info("request",
+		attrs := []any{
 			"method", r.Method,
 			"path", RedactPath(r.URL.Path),
 			"status", rec.status,
-			"duration_ms", float64(time.Since(start).Microseconds())/1000,
-		)
+			"duration_ms", float64(time.Since(start).Microseconds()) / 1000,
+		}
+		if st, ok := r.Context().Value(ctxRequestState).(*requestState); ok && st.userID != "" {
+			attrs = append(attrs, "user_id", st.userID)
+		}
+		LoggerFrom(r.Context()).Info("request", attrs...)
 	})
 }
 

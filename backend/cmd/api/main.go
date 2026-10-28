@@ -11,8 +11,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mazhit-a/mini-kedo/internal/auth"
 	"github.com/mazhit-a/mini-kedo/internal/config"
 	"github.com/mazhit-a/mini-kedo/internal/repository/postgres"
+	"github.com/mazhit-a/mini-kedo/internal/service"
 	transport "github.com/mazhit-a/mini-kedo/internal/transport/http"
 	"github.com/mazhit-a/mini-kedo/migrations"
 )
@@ -55,12 +57,28 @@ func run() error {
 	}
 	defer pool.Close()
 
+	clock := service.SystemClock{}
+	hasher, err := auth.NewPasswordHasher(auth.DefaultBcryptCost)
+	if err != nil {
+		return err
+	}
+	tokens, err := auth.NewTokenManager(cfg.JWTSecret, cfg.JWTTTL, clock.Now)
+	if err != nil {
+		return err
+	}
+	authSvc, err := service.NewAuthService(postgres.NewUserRepository(pool), hasher, tokens, clock, service.UUIDGenerator{})
+	if err != nil {
+		return err
+	}
+
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
 		Handler: transport.NewRouter(transport.Options{
 			Logger:            logger,
 			CORSAllowedOrigin: cfg.CORSAllowedOrigin,
 			MaxBodyBytes:      cfg.MaxUploadBytes + multipartOverhead,
+			Auth:              authSvc,
+			Tokens:            tokens,
 		}),
 		ReadTimeout:       readTimeout,
 		ReadHeaderTimeout: readHeaderTimeout,
