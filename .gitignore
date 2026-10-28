@@ -1,0 +1,19 @@
+# secrets and local config
+.env
+.env.*
+!.env.example
+
+# runtime data
+data/
+
+# dependencies and build output
+node_modules/
+frontend/dist/
+backend/bin/
+*.test
+*.out
+coverage/
+.DS_Store
+
+.claude/
+context/
