@@ -97,6 +97,12 @@ func run() error {
 		postgres.NewAuditRepository(pool),
 		files, txm, clock, service.UUIDGenerator{}, notify.NewLogNotifier(logger), []byte(cfg.SealSecret))
 
+	verifySvc := service.NewVerifyService(
+		postgres.NewDocumentRepository(pool, txm),
+		postgres.NewSignatureRepository(pool),
+		postgres.NewAuditRepository(pool),
+		files, txm, clock, []byte(cfg.SealSecret))
+
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
 		Handler: transport.NewRouter(transport.Options{
@@ -108,6 +114,7 @@ func run() error {
 			Documents:         docSvc,
 			Lifecycle:         lifecycleSvc,
 			Signing:           signingSvc,
+			Verify:            verifySvc,
 		}),
 		ReadTimeout:       readTimeout,
 		ReadHeaderTimeout: readHeaderTimeout,

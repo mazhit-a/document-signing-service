@@ -15,6 +15,7 @@ type Options struct {
 	Documents         DocumentUseCase
 	Lifecycle         LifecycleUseCase
 	Signing           SigningUseCase
+	Verify            VerifyUseCase
 }
 
 func NewRouter(opts Options) http.Handler {
@@ -44,6 +45,12 @@ func NewRouter(opts Options) http.Handler {
 		mux.Handle("POST /api/v1/documents/{id}/send", requireAuth(http.HandlerFunc(life.Send)))
 		mux.Handle("POST /api/v1/documents/{id}/cancel", requireAuth(http.HandlerFunc(life.Cancel)))
 		mux.Handle("GET /api/v1/documents/{id}/events", requireAuth(http.HandlerFunc(life.Events)))
+	}
+
+	if opts.Verify != nil && opts.Tokens != nil {
+		ver := NewVerifyHandlers(opts.Verify)
+		requireAuth := RequireAuth(opts.Tokens)
+		mux.Handle("GET /api/v1/documents/{id}/verify", requireAuth(http.HandlerFunc(ver.Verify)))
 	}
 
 	if opts.Signing != nil {

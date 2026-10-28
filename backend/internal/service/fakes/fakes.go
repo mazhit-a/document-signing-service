@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mazhit-a/mini-kedo/internal/domain"
+	"github.com/mazhit-a/mini-kedo/internal/integrity"
 	"github.com/mazhit-a/mini-kedo/internal/notify"
 	"github.com/mazhit-a/mini-kedo/internal/service"
 	"github.com/mazhit-a/mini-kedo/internal/storage"
@@ -175,7 +176,17 @@ func (a *Audit) Append(_ context.Context, documentID string, typ domain.EventTyp
 	if a.Err != nil {
 		return domain.AuditEvent{}, a.Err
 	}
-	ev := domain.AuditEvent{ID: int64(len(a.Events) + 1), DocumentID: documentID, Type: typ, Actor: actor, Data: data, CreatedAt: at}
+	prev := integrity.GenesisHash
+	for _, e := range a.Events {
+		if e.DocumentID == documentID {
+			prev = e.Hash
+		}
+	}
+	hash, err := integrity.ChainHash(prev, integrity.Event{Type: string(typ), Actor: actor, Data: data, CreatedAt: at})
+	if err != nil {
+		return domain.AuditEvent{}, err
+	}
+	ev := domain.AuditEvent{ID: int64(len(a.Events) + 1), DocumentID: documentID, Type: typ, Actor: actor, Data: data, PrevHash: prev, Hash: hash, CreatedAt: at}
 	a.Events = append(a.Events, ev)
 	return ev, nil
 }

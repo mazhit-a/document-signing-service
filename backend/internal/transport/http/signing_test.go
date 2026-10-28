@@ -38,13 +38,16 @@ func newSignHTTP(t *testing.T) *signHTTP {
 	logger := testLogger(&bytes.Buffer{})
 	docSvc := service.NewDocumentService(docs, sigs, audit, files, fakes.Tx{}, clock, ids, maxUp)
 	life := service.NewLifecycleService(docs, signers, audit, fakes.Tx{}, clock, notify.Noop{}, "http://web.test")
-	sign := service.NewSigningService(docs, signers, sigs, audit, files, fakes.Tx{}, clock, ids, notify.Noop{}, []byte("0123456789abcdef0123456789abcdef"))
+	seal := []byte("0123456789abcdef0123456789abcdef")
+	sign := service.NewSigningService(docs, signers, sigs, audit, files, fakes.Tx{}, clock, ids, notify.Noop{}, seal)
+	verify := service.NewVerifyService(docs, sigs, audit, files, fakes.Tx{}, clock, seal)
 	h := NewRouter(Options{
 		Logger: logger, CORSAllowedOrigin: "http://x", MaxBodyBytes: maxUp + multipartOverhead,
-		Tokens: tokens, Documents: docSvc, Lifecycle: life, Signing: sign,
+		Tokens: tokens, Documents: docSvc, Lifecycle: life, Signing: sign, Verify: verify,
 	})
 	a, _ := tokens.Issue(ownerA)
-	e := &docEnv{h: h, clock: clock, tokA: "Bearer " + a, files: files}
+	b, _ := tokens.Issue(ownerB)
+	e := &docEnv{h: h, clock: clock, tokA: "Bearer " + a, tokB: "Bearer " + b, files: files}
 	s := &signHTTP{docEnv: e, sigs: sigs}
 	s.docID = createDraft(t, e)
 	rec := e.postEmpty("/api/v1/documents/"+s.docID+"/send", e.tokA)
@@ -235,5 +238,47 @@ func TestSignCancelledTokensAre404(t *testing.T) {
 	}
 	if rec := s.do("POST", "/api/v1/sign/"+s.tokens[0]+"/approve", ""); rec.Code != 404 {
 		t.Errorf("approve: %d", rec.Code)
+	}
+}
+
+func TestVerifyEndpoint(t *testing.T) {
+	s := newSignHTTP(t)
+	for _, tok := range s.tokens {
+		if rec := s.do("POST", "/api/v1/sign/"+tok+"/approve", ""); rec.Code != 200 {
+			t.Fatalf("approve: %d %s", rec.Code, rec.Body.String())
+		}
+	}
+	rec := s.get("/api/v1/documents/"+s.docID+"/verify", s.tokA)
+	if rec.Code != 200 {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+	var v struct {
+		Valid bool `json:"valid"`
+		File  struct {
+			OK bool `json:"ok"`
+		} `json:"file"`
+		Signatures []struct {
+			SealOK bool `json:"seal_ok"`
+			Match  bool `json:"hash_matches_document"`
+		} `json:"signatures"`
+		AuditChain struct {
+			OK                 bool   `json:"ok"`
+			Events             int    `json:"events"`
+			FirstBrokenEventID *int64 `json:"first_broken_event_id"`
+		} `json:"audit_chain"`
+		CheckedAt string `json:"checked_at"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &v); err != nil {
+		t.Fatal(err)
+	}
+	if !v.Valid || !v.File.OK || len(v.Signatures) != 2 || !v.Signatures[0].SealOK || !v.Signatures[0].Match || !v.AuditChain.OK || v.AuditChain.FirstBrokenEventID != nil || v.CheckedAt == "" {
+		t.Fatalf("verify = %+v", v)
+	}
+
+	if rec := s.get("/api/v1/documents/"+s.docID+"/verify", ""); rec.Code != 401 {
+		t.Errorf("no auth: %d", rec.Code)
+	}
+	if rec := s.get("/api/v1/documents/"+s.docID+"/verify", s.tokB); rec.Code != 404 {
+		t.Errorf("foreign owner: %d", rec.Code)
 	}
 }
