@@ -28,6 +28,8 @@ jobs:
     env:
       DATABASE_URL: postgres://kedo:kedo@localhost:5432/kedo?sslmode=disable
       TEST_DATABASE_URL: postgres://kedo:kedo@localhost:5432/kedo?sslmode=disable
+      PUBLIC_WEB_URL: http://localhost:5173
+      CORS_ALLOWED_ORIGIN: http://localhost:5173
     defaults:
       run:
         working-directory: backend
