@@ -14,6 +14,7 @@ import (
 	"github.com/mazhit-a/mini-kedo/internal/auth"
 	"github.com/mazhit-a/mini-kedo/internal/config"
 	"github.com/mazhit-a/mini-kedo/internal/notify"
+	"github.com/mazhit-a/mini-kedo/internal/notify/webhook"
 	"github.com/mazhit-a/mini-kedo/internal/repository/postgres"
 	"github.com/mazhit-a/mini-kedo/internal/service"
 	"github.com/mazhit-a/mini-kedo/internal/storage/localfs"
@@ -95,12 +96,15 @@ func run() error {
 		postgres.NewAuditRepository(pool),
 		txm, clock, notify.NewLogNotifier(logger), cfg.PublicWebURL)
 
+	webhookRepo := postgres.NewWebhookRepository(pool, txm)
+	webhookSvc := service.NewWebhookService(webhookRepo, clock, service.UUIDGenerator{})
+
 	signingSvc := service.NewSigningService(
 		postgres.NewDocumentRepository(pool, txm),
 		postgres.NewSignerRepository(pool),
 		postgres.NewSignatureRepository(pool),
 		postgres.NewAuditRepository(pool),
-		files, txm, clock, service.UUIDGenerator{}, notify.NewLogNotifier(logger), []byte(cfg.SealSecret))
+		files, txm, clock, service.UUIDGenerator{}, notify.NewLogNotifier(logger), []byte(cfg.SealSecret)).WithOutbox(webhookRepo)
 
 	verifySvc := service.NewVerifyService(
 		postgres.NewDocumentRepository(pool, txm),
@@ -120,6 +124,7 @@ func run() error {
 			Lifecycle:         lifecycleSvc,
 			Signing:           signingSvc,
 			Verify:            verifySvc,
+			Webhooks:          webhookSvc,
 			ReadyChecks: map[string]transport.ReadyCheck{
 				"database": pool.Ping,
 				"storage":  files.Check,
@@ -133,6 +138,16 @@ func run() error {
 		WriteTimeout:      writeTimeout,
 		IdleTimeout:       idleTimeout,
 	}
+
+	workerCtx, stopWorkers := context.WithCancel(ctx)
+	defer stopWorkers()
+	workersDone := make(chan struct{})
+	go func() {
+		defer close(workersDone)
+		webhook.NewWorker(webhook.Config{
+			Store: webhookRepo, Workers: cfg.WebhookWorkers, Logger: logger,
+		}).Run(workerCtx)
+	}()
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -152,8 +167,14 @@ func run() error {
 
 	shutCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
+	stopWorkers()
 	if err := srv.Shutdown(shutCtx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
+	}
+	select {
+	case <-workersDone:
+	case <-shutCtx.Done():
+		return fmt.Errorf("shutdown: webhook workers did not stop: %w", shutCtx.Err())
 	}
 	logger.Info("stopped")
 	return nil

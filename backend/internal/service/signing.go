@@ -43,6 +43,7 @@ type SigningService struct {
 	ids        IDGenerator
 	notifier   notify.Notifier
 	sealSecret []byte
+	outbox     WebhookOutbox
 }
 
 func NewSigningService(docs DocumentRepository, signers SignerRepository, signatures SignatureRepository, audit AuditRepository, files storage.FileStorage, tx TxManager, clock Clock, ids IDGenerator, notifier notify.Notifier, sealSecret []byte) *SigningService {
@@ -50,6 +51,22 @@ func NewSigningService(docs DocumentRepository, signers SignerRepository, signat
 		docs: docs, signers: signers, signatures: signatures, audit: audit, files: files,
 		tx: tx, clock: clock, ids: ids, notifier: notifier, sealSecret: sealSecret,
 	}
+}
+
+func (s *SigningService) WithOutbox(outbox WebhookOutbox) *SigningService {
+	s.outbox = outbox
+	return s
+}
+
+func (s *SigningService) record(ctx context.Context, documentID string, typ domain.EventType, actor string, data map[string]any, at time.Time) error {
+	ev, err := s.audit.Append(ctx, documentID, typ, actor, data, at)
+	if err != nil {
+		return err
+	}
+	if s.outbox == nil || !typ.IsWebhookEvent() {
+		return nil
+	}
+	return s.outbox.Enqueue(ctx, ev)
 }
 
 func (s *SigningService) resolve(ctx context.Context, token string) (domain.Document, domain.Signer, error) {
@@ -148,7 +165,7 @@ func (s *SigningService) Approve(ctx context.Context, token string, meta ClientM
 		if err := s.signers.UpdateStatus(ctx, signer.ID, domain.SignerSigned, &now, ""); err != nil {
 			return err
 		}
-		if _, err := s.audit.Append(ctx, doc.ID, domain.EventSignerApproved, signer.ID, map[string]any{
+		if err := s.record(ctx, doc.ID, domain.EventSignerApproved, signer.ID, map[string]any{
 			"signer_id": signer.ID, "order": signer.Order,
 		}, now); err != nil {
 			return err
@@ -158,7 +175,7 @@ func (s *SigningService) Approve(ctx context.Context, token string, meta ClientM
 			if err := s.docs.UpdateStatus(ctx, doc.ID, doc.Status, now, doc.CompletedAt); err != nil {
 				return err
 			}
-			if _, err := s.audit.Append(ctx, doc.ID, domain.EventDocumentCompleted, signer.ID, map[string]any{
+			if err := s.record(ctx, doc.ID, domain.EventDocumentCompleted, signer.ID, map[string]any{
 				"signer_count": len(doc.Signers),
 			}, now); err != nil {
 				return err
@@ -220,7 +237,7 @@ func (s *SigningService) Reject(ctx context.Context, token, reason string) (Deci
 		}, now); err != nil {
 			return err
 		}
-		if _, err := s.audit.Append(ctx, doc.ID, domain.EventDocumentRejected, signer.ID, map[string]any{
+		if err := s.record(ctx, doc.ID, domain.EventDocumentRejected, signer.ID, map[string]any{
 			"signer_id": signer.ID,
 		}, now); err != nil {
 			return err

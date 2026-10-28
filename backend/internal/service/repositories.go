@@ -57,3 +57,13 @@ type AuditRepository interface {
 	Append(ctx context.Context, documentID string, typ domain.EventType, actor string, data map[string]any, at time.Time) (domain.AuditEvent, error)
 	ListByDocument(ctx context.Context, documentID string) ([]domain.AuditEvent, error)
 }
+
+type WebhookEndpointRepository interface {
+	Create(ctx context.Context, e domain.WebhookEndpoint) error
+	ListByOwner(ctx context.Context, ownerID string) ([]domain.WebhookEndpoint, error)
+	Delete(ctx context.Context, ownerID, id string) error
+}
+
+type WebhookOutbox interface {
+	Enqueue(ctx context.Context, event domain.AuditEvent) error
+}

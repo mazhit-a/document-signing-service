@@ -54,6 +54,23 @@ const (
 	EventDocumentVerified  EventType = "document.verified"
 )
 
+func (t EventType) IsWebhookEvent() bool {
+	switch t {
+	case EventDocumentCompleted, EventDocumentRejected, EventSignerApproved:
+		return true
+	}
+	return false
+}
+
+type WebhookEndpoint struct {
+	ID        string
+	OwnerID   string
+	URL       string
+	Secret    string
+	Active    bool
+	CreatedAt time.Time
+}
+
 type User struct {
 	ID           string
 	Email        string

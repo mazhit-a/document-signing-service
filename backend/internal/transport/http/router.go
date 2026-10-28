@@ -16,6 +16,7 @@ type Options struct {
 	Lifecycle         LifecycleUseCase
 	Signing           SigningUseCase
 	Verify            VerifyUseCase
+	Webhooks          WebhookUseCase
 	ReadyChecks       map[string]ReadyCheck
 	LoginLimiter      *Limiter
 	SignLimiter       *Limiter
@@ -59,6 +60,14 @@ func NewRouter(opts Options) http.Handler {
 		ver := NewVerifyHandlers(opts.Verify)
 		requireAuth := RequireAuth(opts.Tokens)
 		mux.Handle("GET /api/v1/documents/{id}/verify", requireAuth(http.HandlerFunc(ver.Verify)))
+	}
+
+	if opts.Webhooks != nil && opts.Tokens != nil {
+		hooks := NewWebhookHandlers(opts.Webhooks)
+		requireAuth := RequireAuth(opts.Tokens)
+		mux.Handle("POST /api/v1/webhooks", requireAuth(http.HandlerFunc(hooks.Create)))
+		mux.Handle("GET /api/v1/webhooks", requireAuth(http.HandlerFunc(hooks.List)))
+		mux.Handle("DELETE /api/v1/webhooks/{id}", requireAuth(http.HandlerFunc(hooks.Delete)))
 	}
 
 	if opts.Signing != nil {

@@ -327,3 +327,55 @@ func (n *Notifier) SigningRequested(_ context.Context, req notify.SigningRequest
 	n.Requests = append(n.Requests, req)
 	return nil
 }
+
+type Outbox struct {
+	mu     sync.Mutex
+	Events []domain.AuditEvent
+	Err    error
+}
+
+func (o *Outbox) Enqueue(_ context.Context, ev domain.AuditEvent) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.Err != nil {
+		return o.Err
+	}
+	o.Events = append(o.Events, ev)
+	return nil
+}
+
+type WebhookEndpoints struct {
+	mu    sync.Mutex
+	Items []domain.WebhookEndpoint
+}
+
+func (w *WebhookEndpoints) Create(_ context.Context, e domain.WebhookEndpoint) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.Items = append(w.Items, e)
+	return nil
+}
+
+func (w *WebhookEndpoints) ListByOwner(_ context.Context, ownerID string) ([]domain.WebhookEndpoint, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var out []domain.WebhookEndpoint
+	for _, e := range w.Items {
+		if e.OwnerID == ownerID {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+func (w *WebhookEndpoints) Delete(_ context.Context, ownerID, id string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for i, e := range w.Items {
+		if e.ID == id && e.OwnerID == ownerID {
+			w.Items = append(w.Items[:i], w.Items[i+1:]...)
+			return nil
+		}
+	}
+	return domain.ErrNotFound
+}
