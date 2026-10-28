@@ -15,6 +15,7 @@ import (
 	"github.com/mazhit-a/mini-kedo/internal/config"
 	"github.com/mazhit-a/mini-kedo/internal/repository/postgres"
 	"github.com/mazhit-a/mini-kedo/internal/service"
+	"github.com/mazhit-a/mini-kedo/internal/storage/localfs"
 	transport "github.com/mazhit-a/mini-kedo/internal/transport/http"
 	"github.com/mazhit-a/mini-kedo/migrations"
 )
@@ -71,6 +72,17 @@ func run() error {
 		return err
 	}
 
+	files, err := localfs.New(cfg.StorageDir)
+	if err != nil {
+		return err
+	}
+	txm := postgres.NewTxManager(pool)
+	docSvc := service.NewDocumentService(
+		postgres.NewDocumentRepository(pool, txm),
+		postgres.NewSignatureRepository(pool),
+		postgres.NewAuditRepository(pool),
+		files, txm, clock, service.UUIDGenerator{}, cfg.MaxUploadBytes)
+
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
 		Handler: transport.NewRouter(transport.Options{
@@ -79,6 +91,7 @@ func run() error {
 			MaxBodyBytes:      cfg.MaxUploadBytes + multipartOverhead,
 			Auth:              authSvc,
 			Tokens:            tokens,
+			Documents:         docSvc,
 		}),
 		ReadTimeout:       readTimeout,
 		ReadHeaderTimeout: readHeaderTimeout,

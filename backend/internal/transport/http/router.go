@@ -12,6 +12,7 @@ type Options struct {
 	MaxBodyBytes      int64
 	Auth              AuthUseCase
 	Tokens            TokenParser
+	Documents         DocumentUseCase
 }
 
 func NewRouter(opts Options) http.Handler {
@@ -24,6 +25,15 @@ func NewRouter(opts Options) http.Handler {
 		mux.HandleFunc("POST /api/v1/auth/register", auth.Register)
 		mux.HandleFunc("POST /api/v1/auth/login", auth.Login)
 		mux.Handle("GET /api/v1/me", requireAuth(http.HandlerFunc(auth.Me)))
+	}
+
+	if opts.Documents != nil && opts.Tokens != nil {
+		docs := NewDocumentHandlers(opts.Documents)
+		requireAuth := RequireAuth(opts.Tokens)
+		mux.Handle("POST /api/v1/documents", requireAuth(http.HandlerFunc(docs.Create)))
+		mux.Handle("GET /api/v1/documents", requireAuth(http.HandlerFunc(docs.List)))
+		mux.Handle("GET /api/v1/documents/{id}", requireAuth(http.HandlerFunc(docs.Get)))
+		mux.Handle("GET /api/v1/documents/{id}/file", requireAuth(http.HandlerFunc(docs.Download)))
 	}
 
 	var h http.Handler = mux
