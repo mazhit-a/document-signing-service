@@ -13,6 +13,7 @@ type Options struct {
 	Auth              AuthUseCase
 	Tokens            TokenParser
 	Documents         DocumentUseCase
+	Lifecycle         LifecycleUseCase
 }
 
 func NewRouter(opts Options) http.Handler {
@@ -34,6 +35,14 @@ func NewRouter(opts Options) http.Handler {
 		mux.Handle("GET /api/v1/documents", requireAuth(http.HandlerFunc(docs.List)))
 		mux.Handle("GET /api/v1/documents/{id}", requireAuth(http.HandlerFunc(docs.Get)))
 		mux.Handle("GET /api/v1/documents/{id}/file", requireAuth(http.HandlerFunc(docs.Download)))
+	}
+
+	if opts.Lifecycle != nil && opts.Tokens != nil {
+		life := NewLifecycleHandlers(opts.Lifecycle)
+		requireAuth := RequireAuth(opts.Tokens)
+		mux.Handle("POST /api/v1/documents/{id}/send", requireAuth(http.HandlerFunc(life.Send)))
+		mux.Handle("POST /api/v1/documents/{id}/cancel", requireAuth(http.HandlerFunc(life.Cancel)))
+		mux.Handle("GET /api/v1/documents/{id}/events", requireAuth(http.HandlerFunc(life.Events)))
 	}
 
 	var h http.Handler = mux

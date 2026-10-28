@@ -79,7 +79,7 @@ func (r *SignerRepository) SetTokenHash(ctx context.Context, id, tokenHash strin
 	if !validUUID(id) {
 		return domain.ErrNotFound
 	}
-	tag, err := Conn(ctx, r.pool).Exec(ctx, `UPDATE signers SET token_hash = $2 WHERE id = $1::uuid`, id, tokenHash)
+	tag, err := Conn(ctx, r.pool).Exec(ctx, `UPDATE signers SET token_hash = NULLIF($2, '') WHERE id = $1::uuid`, id, tokenHash)
 	if err != nil {
 		return fmt.Errorf("set token hash: %w", err)
 	}

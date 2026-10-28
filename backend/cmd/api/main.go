@@ -13,6 +13,7 @@ import (
 
 	"github.com/mazhit-a/mini-kedo/internal/auth"
 	"github.com/mazhit-a/mini-kedo/internal/config"
+	"github.com/mazhit-a/mini-kedo/internal/notify"
 	"github.com/mazhit-a/mini-kedo/internal/repository/postgres"
 	"github.com/mazhit-a/mini-kedo/internal/service"
 	"github.com/mazhit-a/mini-kedo/internal/storage/localfs"
@@ -83,6 +84,12 @@ func run() error {
 		postgres.NewAuditRepository(pool),
 		files, txm, clock, service.UUIDGenerator{}, cfg.MaxUploadBytes)
 
+	lifecycleSvc := service.NewLifecycleService(
+		postgres.NewDocumentRepository(pool, txm),
+		postgres.NewSignerRepository(pool),
+		postgres.NewAuditRepository(pool),
+		txm, clock, notify.NewLogNotifier(logger), cfg.PublicWebURL)
+
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
 		Handler: transport.NewRouter(transport.Options{
@@ -92,6 +99,7 @@ func run() error {
 			Auth:              authSvc,
 			Tokens:            tokens,
 			Documents:         docSvc,
+			Lifecycle:         lifecycleSvc,
 		}),
 		ReadTimeout:       readTimeout,
 		ReadHeaderTimeout: readHeaderTimeout,
