@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/mail"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,8 @@ const minSecretBytes = 32
 const (
 	PlaceholderJWTSecret  = "change-me-at-least-32-bytes-long"
 	PlaceholderSealSecret = "change-me-another-32-bytes-secret"
+
+	PlaceholderEmailOutboxKey = "change-me-email-outbox-32-bytes-key"
 )
 
 type Config struct {
@@ -28,9 +31,23 @@ type Config struct {
 	CORSAllowedOrigin string
 	WebhookWorkers    int
 	TrustProxy        bool
+
+	SMTPHost       string
+	SMTPPort       int
+	SMTPUser       string
+	SMTPPassword   string
+	MailFrom       string
+	EmailOutboxKey string
+	EmailWorkers   int
 }
 
 func (c Config) IsDev() bool { return c.AppEnv == "dev" }
+
+func (c Config) SMTPConfigured() bool { return c.SMTPHost != "" }
+
+func (c Config) EmailOutboxEnabled() bool {
+	return c.EmailOutboxKey != "" && (c.SMTPConfigured() || c.IsDev())
+}
 
 func Load(getenv func(string) string) (Config, error) {
 	var errs []error
@@ -82,6 +99,22 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	cfg.TrustProxy = trust
 
+	emailWorkers, err := strconv.Atoi(str("EMAIL_WORKERS", "2"))
+	if err != nil || emailWorkers < 0 {
+		errs = append(errs, errors.New("EMAIL_WORKERS must be a non-negative integer"))
+	}
+	cfg.EmailWorkers = emailWorkers
+
+	smtpPort, err := strconv.Atoi(str("SMTP_PORT", "587"))
+	if err != nil || smtpPort < 1 || smtpPort > 65535 {
+		errs = append(errs, errors.New("SMTP_PORT must be a port number between 1 and 65535"))
+	}
+	cfg.SMTPPort = smtpPort
+	cfg.SMTPHost = str("SMTP_HOST", "")
+	cfg.SMTPUser = str("SMTP_USER", "")
+	cfg.SMTPPassword = strings.TrimSpace(getenv("SMTP_PASSWORD"))
+	cfg.MailFrom = str("MAIL_FROM", "")
+
 	switch cfg.AppEnv {
 	case "dev", "staging", "prod":
 	default:
@@ -90,6 +123,8 @@ func Load(getenv func(string) string) (Config, error) {
 
 	cfg.JWTSecret = secret(getenv, "JWT_SECRET", PlaceholderJWTSecret, cfg.IsDev(), &errs)
 	cfg.SealSecret = secret(getenv, "SEAL_SECRET", PlaceholderSealSecret, cfg.IsDev(), &errs)
+
+	validateSMTP(&cfg, getenv, &errs)
 
 	if len(errs) > 0 {
 		return Config{}, fmt.Errorf("invalid configuration: %w", errors.Join(errs...))
@@ -114,4 +149,43 @@ func secret(getenv func(string) string, key, placeholder string, dev bool, errs 
 		*errs = append(*errs, fmt.Errorf("%s must not be a placeholder value when APP_ENV is not dev", key))
 	}
 	return v
+}
+
+func validateSMTP(cfg *Config, getenv func(string) string, errs *[]error) {
+	if cfg.SMTPHost == "" {
+		for key, v := range map[string]string{"SMTP_USER": cfg.SMTPUser, "SMTP_PASSWORD": cfg.SMTPPassword, "MAIL_FROM": cfg.MailFrom} {
+			if v != "" {
+				*errs = append(*errs, fmt.Errorf("SMTP_HOST is required when %s is set", key))
+			}
+		}
+	} else {
+		for key, v := range map[string]string{"SMTP_USER": cfg.SMTPUser, "SMTP_PASSWORD": cfg.SMTPPassword, "MAIL_FROM": cfg.MailFrom} {
+			if v == "" {
+				*errs = append(*errs, fmt.Errorf("%s is required when SMTP_HOST is set", key))
+			}
+		}
+		if cfg.MailFrom != "" {
+			if addr, err := mail.ParseAddress(cfg.MailFrom); err != nil || addr.Address != cfg.MailFrom {
+				*errs = append(*errs, errors.New("MAIL_FROM must be a plain email address"))
+			}
+		}
+	}
+
+	key := strings.TrimSpace(getenv("EMAIL_OUTBOX_KEY"))
+	switch {
+	case key == "" && cfg.IsDev():
+		cfg.EmailOutboxKey = PlaceholderEmailOutboxKey
+	case key == "":
+		if cfg.SMTPConfigured() {
+			*errs = append(*errs, errors.New("EMAIL_OUTBOX_KEY is required when SMTP_HOST is set and APP_ENV is not dev"))
+		}
+	case len(key) < minSecretBytes:
+		*errs = append(*errs, fmt.Errorf("EMAIL_OUTBOX_KEY must be at least %d bytes", minSecretBytes))
+	case !cfg.IsDev() && strings.HasPrefix(key, "change-me"):
+		*errs = append(*errs, errors.New("EMAIL_OUTBOX_KEY must not be a placeholder value when APP_ENV is not dev"))
+	case key == cfg.JWTSecret || key == cfg.SealSecret:
+		*errs = append(*errs, errors.New("EMAIL_OUTBOX_KEY must differ from JWT_SECRET and SEAL_SECRET"))
+	default:
+		cfg.EmailOutboxKey = key
+	}
 }

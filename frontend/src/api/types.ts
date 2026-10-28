@@ -94,6 +94,7 @@ export interface SigningLink {
 
 export interface SendResponse {
   status: DocumentStatus
+  note: string
   signing_links: SigningLink[]
 }
 

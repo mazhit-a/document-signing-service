@@ -125,6 +125,7 @@ func run() error {
 	for _, l := range sent.Links {
 		fmt.Printf("signing link #%d: %s\n", l.Order, l.URL)
 	}
+	fmt.Println("later signers get their link when it is their turn (by email, or `make outbox` in dev without SMTP)")
 	return nil
 }
 

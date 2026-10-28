@@ -2,7 +2,6 @@ package postgres_test
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +9,7 @@ import (
 	"github.com/mazhit-a/mini-kedo/internal/domain"
 	"github.com/mazhit-a/mini-kedo/internal/integrity"
 	"github.com/mazhit-a/mini-kedo/internal/notify"
+	"github.com/mazhit-a/mini-kedo/internal/notify/email"
 	"github.com/mazhit-a/mini-kedo/internal/service"
 	"github.com/mazhit-a/mini-kedo/internal/service/fakes"
 )
@@ -17,10 +17,32 @@ import (
 var testSealSecret = []byte("0123456789abcdef0123456789abcdef")
 
 func (r *repos) signing(audit service.AuditRepository) *service.SigningService {
-	return service.NewSigningService(r.documents, r.signers, r.signatures, audit, fakes.NewStorage(), r.tx, service.SystemClock{}, service.UUIDGenerator{}, notify.Noop{}, testSealSecret)
+	return service.NewSigningService(r.documents, r.signers, r.signatures, audit, fakes.NewStorage(), r.tx, service.SystemClock{}, service.UUIDGenerator{}, notify.Noop{}, testSealSecret).WithEmail(r.email, r.users, "http://web.test")
 }
 
-func (r *repos) sent(t *testing.T, signers int) (domain.User, domain.Document, []string) {
+type tokenSet struct {
+	r     *repos
+	docID string
+	first string
+}
+
+func (ts tokenSet) get(order int) string {
+	if order == 1 {
+		return ts.first
+	}
+	items, err := ts.r.email.PeekPending(context.Background(), ts.docID)
+	if err != nil {
+		return ""
+	}
+	for _, m := range items {
+		if m.Kind == email.KindSignerTurn && m.Payload.Position == order {
+			return strings.TrimPrefix(m.Payload.Link, "http://web.test/sign/")
+		}
+	}
+	return ""
+}
+
+func (r *repos) sent(t *testing.T, signers int) (domain.User, domain.Document, tokenSet) {
 	t.Helper()
 	owner := r.user(t, "o@example.com")
 	d := r.doc(t, owner.ID, baseTime, domain.DocumentDraft, signers)
@@ -28,11 +50,7 @@ func (r *repos) sent(t *testing.T, signers int) (domain.User, domain.Document, [
 	if err != nil {
 		t.Fatal(err)
 	}
-	var tokens []string
-	for _, l := range res.Links {
-		tokens = append(tokens, strings.TrimPrefix(l.URL, "http://web.test/sign/"))
-	}
-	return owner, d, tokens
+	return owner, d, tokenSet{r: r, docID: d.ID, first: strings.TrimPrefix(res.Links[0].URL, "http://web.test/sign/")}
 }
 
 func TestSigningFullFlowKeepsChainAndInvariants(t *testing.T) {
@@ -43,8 +61,8 @@ func TestSigningFullFlowKeepsChainAndInvariants(t *testing.T) {
 	meta := service.ClientMeta{IP: "203.0.113.9", UserAgent: "pg-test"}
 
 	var last service.DecisionResult
-	for i, tok := range tokens {
-		res, err := svc.Approve(ctx, tok, meta)
+	for i := 1; i <= 3; i++ {
+		res, err := svc.Approve(ctx, tokens.get(i), meta)
 		if err != nil {
 			t.Fatalf("approve %d: %v", i, err)
 		}
@@ -110,7 +128,7 @@ func TestSigningRejectFlow(t *testing.T) {
 	owner, d, tokens := r.sent(t, 2)
 	svc := r.signing(r.audit)
 
-	if _, err := svc.Reject(ctx, tokens[0], "Wrong salary amount"); err != nil {
+	if _, err := svc.Reject(ctx, tokens.get(1), "Wrong salary amount"); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := r.documents.GetForOwner(ctx, owner.ID, d.ID)
@@ -120,8 +138,11 @@ func TestSigningRejectFlow(t *testing.T) {
 	if err := got.CheckInvariants(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Approve(ctx, tokens[1], service.ClientMeta{}); !errors.Is(err, domain.ErrDocumentClosed) {
-		t.Errorf("later signer: %v", err)
+	if tokens.get(2) != "" {
+		t.Error("later signer must never receive a token after rejection")
+	}
+	if n := r.countWhere(t, `SELECT count(*) FROM email_outbox WHERE document_id = $1::uuid AND kind = 'owner_rejected'`, d.ID); n != 1 {
+		t.Errorf("owner_rejected emails = %d", n)
 	}
 	if n := r.countWhere(t, `SELECT count(*) FROM signatures WHERE document_id = $1::uuid`, d.ID); n != 0 {
 		t.Errorf("signatures = %d", n)
@@ -137,7 +158,7 @@ func TestSigningRollsBackWhenAuditFails(t *testing.T) {
 	ctx := context.Background()
 	owner, d, tokens := r.sent(t, 2)
 
-	if _, err := r.signing(failingAudit{r.audit}).Approve(ctx, tokens[0], service.ClientMeta{}); err == nil {
+	if _, err := r.signing(failingAudit{r.audit}).Approve(ctx, tokens.get(1), service.ClientMeta{}); err == nil {
 		t.Fatal("expected error")
 	}
 	got, _ := r.documents.GetForOwner(ctx, owner.ID, d.ID)
@@ -147,7 +168,7 @@ func TestSigningRollsBackWhenAuditFails(t *testing.T) {
 	if n := r.countWhere(t, `SELECT count(*) FROM signatures WHERE document_id = $1::uuid`, d.ID); n != 0 {
 		t.Errorf("signature survived rollback: %d", n)
 	}
-	if _, err := r.signing(r.audit).Approve(ctx, tokens[0], service.ClientMeta{}); err != nil {
+	if _, err := r.signing(r.audit).Approve(ctx, tokens.get(1), service.ClientMeta{}); err != nil {
 		t.Errorf("retry after rollback: %v", err)
 	}
 }
@@ -168,7 +189,7 @@ func TestConcurrentApprovesProduceExactlyOneSignature(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			results[i], errs[i] = svc.Approve(ctx, tokens[0], service.ClientMeta{IP: "203.0.113.1"})
+			results[i], errs[i] = svc.Approve(ctx, tokens.get(1), service.ClientMeta{IP: "203.0.113.1"})
 		}()
 	}
 	close(start)
@@ -207,12 +228,12 @@ func TestConcurrentApproveAndRejectLeaveOneOutcome(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		<-start
-		_, approveErr = svc.Approve(ctx, tokens[0], service.ClientMeta{})
+		_, approveErr = svc.Approve(ctx, tokens.get(1), service.ClientMeta{})
 	}()
 	go func() {
 		defer wg.Done()
 		<-start
-		_, rejectErr = svc.Reject(ctx, tokens[0], "no")
+		_, rejectErr = svc.Reject(ctx, tokens.get(1), "no")
 	}()
 	close(start)
 	wg.Wait()

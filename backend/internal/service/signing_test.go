@@ -10,6 +10,7 @@ import (
 
 	"github.com/mazhit-a/mini-kedo/internal/domain"
 	"github.com/mazhit-a/mini-kedo/internal/integrity"
+	"github.com/mazhit-a/mini-kedo/internal/notify/email"
 	"github.com/mazhit-a/mini-kedo/internal/service"
 	"github.com/mazhit-a/mini-kedo/internal/service/fakes"
 )
@@ -23,20 +24,26 @@ type signEnv struct {
 	tokens []string
 }
 
+func (e *signEnv) tok(order int) string {
+	link, ok := e.mail.TurnLink(order)
+	if !ok {
+		return ""
+	}
+	return strings.TrimPrefix(link, "http://web.test/sign/")
+}
+
 func newSignEnv(t *testing.T) *signEnv {
 	t.Helper()
 	le := newLifeEnv()
 	e := &signEnv{lifeEnv: le}
-	e.sign = service.NewSigningService(le.docs, le.signers, le.sigs, le.audit, le.files, fakes.Tx{}, le.clock, &fakes.SeqIDs{}, le.notifier, sealSecret)
+	e.sign = service.NewSigningService(le.docs, le.signers, le.sigs, le.audit, le.files, fakes.Tx{}, le.clock, &fakes.SeqIDs{}, le.notifier, sealSecret).WithEmail(le.mail, fakes.Owners{Users: map[string]domain.User{owner: ownerUser}}, "http://web.test")
 	d := le.draft(t)
 	res, err := le.life.SendDocument(context.Background(), owner, d.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	e.doc = d
-	for _, l := range res.Links {
-		e.tokens = append(e.tokens, strings.TrimPrefix(l.URL, "http://web.test/sign/"))
-	}
+	e.tokens = []string{strings.TrimPrefix(res.Links[0].URL, "http://web.test/sign/")}
 	return e
 }
 
@@ -117,7 +124,7 @@ func TestApproveLastSignerCompletesDocument(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.clock.T = e.clock.T.Add(time.Hour)
-	res, err := e.sign.Approve(ctx, e.tokens[1], meta)
+	res, err := e.sign.Approve(ctx, e.tok(2), meta)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,20 +143,100 @@ func TestApproveLastSignerCompletesDocument(t *testing.T) {
 	if types[n-2] != domain.EventSignerApproved || types[n-1] != domain.EventDocumentCompleted {
 		t.Errorf("events = %v", types)
 	}
-	again, err := e.sign.Approve(ctx, e.tokens[1], meta)
+	again, err := e.sign.Approve(ctx, e.tok(2), meta)
 	if err != nil || again != res {
 		t.Errorf("repeat after completion: %+v %v", again, err)
 	}
 }
 
-func TestApproveOutOfTurnIsNotYourTurn(t *testing.T) {
+func TestWaitingSignerHasNoTokenUntilTurn(t *testing.T) {
 	e := newSignEnv(t)
-	_, err := e.sign.Approve(context.Background(), e.tokens[1], meta)
-	if !errors.Is(err, domain.ErrNotYourTurn) {
-		t.Fatalf("want ErrNotYourTurn, got %v", err)
+	if e.tok(2) != "" || e.stored(e.doc.ID).Signers[1].TokenHash != "" {
+		t.Fatal("signer #2 must have no token before its turn")
+	}
+	if _, err := e.sign.View(context.Background(), ""); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("empty token: %v", err)
 	}
 	if len(e.sigs.Items) != 0 {
 		t.Error("no signature may be written")
+	}
+}
+
+func TestApproveIssuesFreshTokenAndEmailForNextSigner(t *testing.T) {
+	e := newSignEnv(t)
+	ctx := context.Background()
+	if _, err := e.sign.Approve(ctx, e.tokens[0], meta); err != nil {
+		t.Fatal(err)
+	}
+	next := e.tok(2)
+	if len(next) < 40 || next == e.tokens[0] {
+		t.Fatalf("bad next token %q", next)
+	}
+	got := e.stored(e.doc.ID)
+	if got.Signers[1].TokenHash != integrity.HashToken(next) || got.Signers[1].Status != domain.SignerPending {
+		t.Errorf("signer #2 = %+v", got.Signers[1])
+	}
+	if want := []email.Kind{email.KindSignerTurn, email.KindSignerTurn}; len(e.mail.Kinds()) != 2 || e.mail.Kinds()[1] != want[1] {
+		t.Errorf("kinds = %v", e.mail.Kinds())
+	}
+	m := e.mail.Messages[1]
+	if m.Recipient != got.Signers[1].Email || m.Payload.Position != 2 || m.Payload.Total != 2 {
+		t.Errorf("message = %+v", m)
+	}
+	if last := e.notifier.Requests[len(e.notifier.Requests)-1]; last.URL != m.Payload.Link {
+		t.Errorf("notifier url %q", last.URL)
+	}
+	if _, err := e.sign.Approve(ctx, e.tokens[0], meta); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.mail.Messages) != 2 || e.tok(2) != next {
+		t.Error("repeat approve must not issue another token or email")
+	}
+}
+
+func TestCompletionEmailsOwner(t *testing.T) {
+	e := newSignEnv(t)
+	ctx := context.Background()
+	if _, err := e.sign.Approve(ctx, e.tokens[0], meta); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.sign.Approve(ctx, e.tok(2), meta); err != nil {
+		t.Fatal(err)
+	}
+	kinds := e.mail.Kinds()
+	if len(kinds) != 3 || kinds[2] != email.KindOwnerCompleted {
+		t.Fatalf("kinds = %v", kinds)
+	}
+	m := e.mail.Messages[2]
+	if m.Recipient != ownerUser.Email || m.Payload.Link != "" || m.Payload.Total != 2 {
+		t.Errorf("message = %+v", m)
+	}
+}
+
+func TestRejectionEmailsOwnerWithReason(t *testing.T) {
+	e := newSignEnv(t)
+	if _, err := e.sign.Reject(context.Background(), e.tokens[0], "  Wrong amount "); err != nil {
+		t.Fatal(err)
+	}
+	kinds := e.mail.Kinds()
+	if len(kinds) != 2 || kinds[1] != email.KindOwnerRejected {
+		t.Fatalf("kinds = %v", kinds)
+	}
+	m := e.mail.Messages[1]
+	if m.Recipient != ownerUser.Email || m.Payload.Reason != "Wrong amount" || m.Payload.SignerEmail != e.stored(e.doc.ID).Signers[0].Email || m.Payload.Link != "" {
+		t.Errorf("message = %+v", m)
+	}
+}
+
+func TestApproveEmailFailureLeavesNotifierSilent(t *testing.T) {
+	e := newSignEnv(t)
+	e.mail.Err = errors.New("outbox down")
+	notes := len(e.notifier.Requests)
+	if _, err := e.sign.Approve(context.Background(), e.tokens[0], meta); err == nil {
+		t.Fatal("expected error")
+	}
+	if len(e.notifier.Requests) != notes {
+		t.Error("notifier must only run after commit")
 	}
 }
 
@@ -194,11 +281,8 @@ func TestRejectClosesDocumentForEveryone(t *testing.T) {
 	if _, err := e.sign.Reject(ctx, e.tokens[0], "again"); !errors.Is(err, domain.ErrDocumentClosed) {
 		t.Errorf("repeat reject: %v", err)
 	}
-	if _, err := e.sign.Approve(ctx, e.tokens[1], meta); !errors.Is(err, domain.ErrDocumentClosed) {
-		t.Errorf("later signer approve: %v", err)
-	}
-	if _, err := e.sign.Reject(ctx, e.tokens[1], "me too"); !errors.Is(err, domain.ErrDocumentClosed) {
-		t.Errorf("later signer reject: %v", err)
+	if e.tok(2) != "" {
+		t.Error("later signer must never receive a token after rejection")
 	}
 	if len(e.sigs.Items) != 0 {
 		t.Error("rejected document must hold no signatures")
@@ -222,16 +306,13 @@ func TestRejectValidatesReason(t *testing.T) {
 func TestRejectOutOfTurnAndAfterSigning(t *testing.T) {
 	e := newSignEnv(t)
 	ctx := context.Background()
-	if _, err := e.sign.Reject(ctx, e.tokens[1], "early"); !errors.Is(err, domain.ErrNotYourTurn) {
-		t.Errorf("waiting reject: %v", err)
-	}
 	if _, err := e.sign.Approve(ctx, e.tokens[0], meta); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.sign.Reject(ctx, e.tokens[0], "late"); !errors.Is(err, domain.ErrInvalidState) {
 		t.Errorf("signed reject: %v", err)
 	}
-	if _, err := e.sign.Approve(ctx, e.tokens[1], meta); err != nil {
+	if _, err := e.sign.Approve(ctx, e.tok(2), meta); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.sign.Reject(ctx, e.tokens[0], "late"); !errors.Is(err, domain.ErrDocumentClosed) {
@@ -242,10 +323,14 @@ func TestRejectOutOfTurnAndAfterSigning(t *testing.T) {
 func TestCancelledDocumentTokensAreNotFound(t *testing.T) {
 	e := newSignEnv(t)
 	ctx := context.Background()
+	if _, err := e.sign.Approve(ctx, e.tokens[0], meta); err != nil {
+		t.Fatal(err)
+	}
+	second := e.tok(2)
 	if _, err := e.life.CancelDocument(ctx, owner, e.doc.ID); err != nil {
 		t.Fatal(err)
 	}
-	for i, tok := range e.tokens {
+	for i, tok := range []string{e.tokens[0], second} {
 		if _, err := e.sign.Approve(ctx, tok, meta); !errors.Is(err, domain.ErrNotFound) {
 			t.Errorf("token %d approve: %v", i, err)
 		}
@@ -259,22 +344,21 @@ func TestViewCanAct(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	v1, _ := e.sign.View(ctx, e.tokens[1])
-	if !v0.CanAct || v1.CanAct || v0.Total != 2 || v0.Signer.Order != 1 || v1.Signer.Status != domain.SignerWaiting {
-		t.Fatalf("v0=%+v v1=%+v", v0, v1)
+	if !v0.CanAct || v0.Total != 2 || v0.Signer.Order != 1 {
+		t.Fatalf("v0=%+v", v0)
 	}
 	if _, err := e.sign.Approve(ctx, e.tokens[0], meta); err != nil {
 		t.Fatal(err)
 	}
 	v0, _ = e.sign.View(ctx, e.tokens[0])
-	v1, _ = e.sign.View(ctx, e.tokens[1])
+	v1, _ := e.sign.View(ctx, e.tok(2))
 	if v0.CanAct || !v1.CanAct {
 		t.Errorf("after approve: v0=%v v1=%v", v0.CanAct, v1.CanAct)
 	}
-	if _, err := e.sign.Approve(ctx, e.tokens[1], meta); err != nil {
+	if _, err := e.sign.Approve(ctx, e.tok(2), meta); err != nil {
 		t.Fatal(err)
 	}
-	v1, _ = e.sign.View(ctx, e.tokens[1])
+	v1, _ = e.sign.View(ctx, e.tok(2))
 	if v1.CanAct || v1.Document.Status != domain.DocumentCompleted {
 		t.Errorf("after completion: %+v", v1)
 	}
@@ -296,7 +380,7 @@ func TestViewRejectedDocumentHasNoActors(t *testing.T) {
 
 func TestOpenFileByToken(t *testing.T) {
 	e := newSignEnv(t)
-	doc, rc, err := e.sign.OpenFile(context.Background(), e.tokens[1])
+	doc, rc, err := e.sign.OpenFile(context.Background(), e.tokens[0])
 	if err != nil {
 		t.Fatal(err)
 	}

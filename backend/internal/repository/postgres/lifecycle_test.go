@@ -22,7 +22,7 @@ func (failingAudit) Append(context.Context, string, domain.EventType, string, ma
 }
 
 func (r *repos) lifecycle(audit service.AuditRepository) *service.LifecycleService {
-	return service.NewLifecycleService(r.documents, r.signers, audit, r.tx, service.SystemClock{}, notify.Noop{}, "http://web.test")
+	return service.NewLifecycleService(r.documents, r.signers, audit, r.tx, service.SystemClock{}, notify.Noop{}, "http://web.test").WithEmail(r.email, r.users)
 }
 
 func (r *repos) countWhere(t *testing.T, query string, args ...any) int {
@@ -59,14 +59,23 @@ func TestSendStoresOnlyHashesAndOnePendingSigner(t *testing.T) {
 	if err := got.CheckInvariants(); err != nil {
 		t.Fatal(err)
 	}
-	for i, s := range got.Signers {
-		token := strings.TrimPrefix(res.Links[i].URL, "http://web.test/sign/")
-		if s.TokenHash != integrity.HashToken(token) {
-			t.Errorf("signer %d hash mismatch", i)
+	if len(res.Links) != 1 {
+		t.Fatalf("links = %d, want 1", len(res.Links))
+	}
+	token := strings.TrimPrefix(res.Links[0].URL, "http://web.test/sign/")
+	if got.Signers[0].TokenHash != integrity.HashToken(token) {
+		t.Error("signer 1 hash mismatch")
+	}
+	if n := r.countWhere(t, `SELECT count(*) FROM signers WHERE token_hash = $1`, token); n != 0 {
+		t.Error("raw token stored")
+	}
+	for i, s := range got.Signers[1:] {
+		if s.TokenHash != "" {
+			t.Errorf("waiting signer %d has a token hash", i+2)
 		}
-		if n := r.countWhere(t, `SELECT count(*) FROM signers WHERE token_hash = $1`, token); n != 0 {
-			t.Errorf("raw token stored for signer %d", i)
-		}
+	}
+	if n := r.countWhere(t, `SELECT count(*) FROM signers WHERE document_id = $1::uuid AND token_hash IS NULL`, d.ID); n != 2 {
+		t.Errorf("NULL token hashes = %d, want 2", n)
 	}
 	if got.Signers[0].Status != domain.SignerPending || got.Signers[1].Status != domain.SignerWaiting || got.Signers[2].Status != domain.SignerWaiting {
 		t.Errorf("signer statuses: %+v", got.Signers)

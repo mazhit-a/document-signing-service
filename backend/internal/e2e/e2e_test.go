@@ -20,6 +20,8 @@ import (
 	"github.com/mazhit-a/mini-kedo/internal/auth"
 	"github.com/mazhit-a/mini-kedo/internal/integrity"
 	"github.com/mazhit-a/mini-kedo/internal/notify"
+	"github.com/mazhit-a/mini-kedo/internal/notify/email"
+	"github.com/mazhit-a/mini-kedo/internal/notify/email/smtptest"
 	"github.com/mazhit-a/mini-kedo/internal/repository/postgres"
 	"github.com/mazhit-a/mini-kedo/internal/repository/postgres/pgtest"
 	"github.com/mazhit-a/mini-kedo/internal/service"
@@ -38,6 +40,36 @@ type stack struct {
 	srv     *httptest.Server
 	db      *pgtest.DB
 	dataDir string
+	smtp    *smtptest.Server
+}
+
+const outboxKey = "e2e-outbox-key-0123456789abcdef-xyz"
+
+func (s *stack) waitMail(t *testing.T, to, subjectPrefix string) smtptest.Received {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, m := range s.smtp.Messages() {
+			if len(m.To) == 1 && m.To[0] == to && strings.HasPrefix(m.Subject(), subjectPrefix) {
+				return m
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("no %q email to %s within deadline", subjectPrefix, to)
+	return smtptest.Received{}
+}
+
+func (s *stack) signingToken(t *testing.T, to string) string {
+	t.Helper()
+	m := s.waitMail(t, to, "Please sign:")
+	for _, line := range strings.Split(m.Text(), "\n") {
+		if strings.HasPrefix(line, webURL+"/sign/") {
+			return strings.TrimPrefix(strings.TrimSpace(line), webURL+"/sign/")
+		}
+	}
+	t.Fatalf("no signing link in email: %q", m.Text())
+	return ""
 }
 
 func newStack(t *testing.T) *stack {
@@ -68,6 +100,34 @@ func newStack(t *testing.T) *stack {
 	if err != nil {
 		t.Fatal(err)
 	}
+	users := postgres.NewUserRepository(db.Pool)
+	crypto, err := email.NewCrypto(outboxKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outbox := postgres.NewEmailRepository(db.Pool, txm, crypto, ids.NewID)
+	fake := smtptest.New(t, smtptest.Options{User: "mailer", Password: "mailer-pass"})
+	sender, err := email.NewSMTPSender(email.SMTPConfig{
+		Host: fake.Host(), Port: fake.Port(), User: "mailer", Password: "mailer-pass",
+		From: "noreply@kedo.test", TLSConfig: fake.TLSConfig(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerCtx, stopWorker := context.WithCancel(context.Background())
+	workerDone := make(chan struct{})
+	go func() {
+		defer close(workerDone)
+		email.NewWorker(email.WorkerConfig{
+			Store: outbox, Sender: sender, Crypto: crypto, Workers: 2, PollInterval: 20 * time.Millisecond,
+			Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		}).Run(workerCtx)
+	}()
+	t.Cleanup(func() {
+		stopWorker()
+		<-workerDone
+	})
+
 	h := transport.NewRouter(transport.Options{
 		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
 		CORSAllowedOrigin: "http://x",
@@ -75,13 +135,13 @@ func newStack(t *testing.T) *stack {
 		Auth:              authSvc,
 		Tokens:            tokens,
 		Documents:         service.NewDocumentService(docs, sigs, audit, files, txm, clock, ids, maxUpload),
-		Lifecycle:         service.NewLifecycleService(docs, signers, audit, txm, clock, notify.Noop{}, webURL),
-		Signing:           service.NewSigningService(docs, signers, sigs, audit, files, txm, clock, ids, notify.Noop{}, []byte(sealSecret)),
+		Lifecycle:         service.NewLifecycleService(docs, signers, audit, txm, clock, notify.Noop{}, webURL).WithEmail(outbox, users),
+		Signing:           service.NewSigningService(docs, signers, sigs, audit, files, txm, clock, ids, notify.Noop{}, []byte(sealSecret)).WithEmail(outbox, users, webURL),
 		Verify:            service.NewVerifyService(docs, sigs, audit, files, txm, clock, []byte(sealSecret)),
 	})
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	return &stack{srv: srv, db: db, dataDir: dir}
+	return &stack{srv: srv, db: db, dataDir: dir, smtp: fake}
 }
 
 type reply struct {
@@ -327,45 +387,57 @@ func TestFullLifecycleThenTamper(t *testing.T) {
 	if send.header.Get("Cache-Control") != "no-store" {
 		t.Error("send response must be no-store")
 	}
-	var tokens []string
-	for i, raw := range asList(t, sm["signing_links"]) {
-		l := asObject(t, raw)
-		requireKeys(t, l, "signer_id", "order", "url", "note")
-		url, _ := l["url"].(string)
-		if !strings.HasPrefix(url, webURL+"/sign/") || int(l["order"].(float64)) != i+1 {
-			t.Errorf("link %d = %v", i, l)
-		}
-		tokens = append(tokens, strings.TrimPrefix(url, webURL+"/sign/"))
+	links := asList(t, sm["signing_links"])
+	if len(links) != 1 {
+		t.Fatalf("links = %d, want exactly signer #1", len(links))
 	}
-	if len(tokens) != 3 {
-		t.Fatalf("links = %d", len(tokens))
+	l := asObject(t, links[0])
+	requireKeys(t, l, "signer_id", "order", "url", "note")
+	url, _ := l["url"].(string)
+	if !strings.HasPrefix(url, webURL+"/sign/") || int(l["order"].(float64)) != 1 {
+		t.Errorf("link = %v", l)
 	}
+	if note, _ := sm["note"].(string); !strings.Contains(note, "by email") {
+		t.Errorf("send note = %q", note)
+	}
+	first := strings.TrimPrefix(url, webURL+"/sign/")
 	requireErrorEnvelope(t, s.json(t, "POST", "/api/v1/documents/"+docID+"/send", bearer, nil), 409, "invalid_state")
 
-	for i, tok := range tokens {
-		view := s.json(t, "GET", "/api/v1/sign/"+tok, "", nil)
-		expectStatus(t, view, 200)
-		vm := view.object(t)
-		requireKeys(t, vm, "document", "signer", "can_act")
-		requireKeys(t, asObject(t, vm["document"]), "title", "file_name", "size_bytes", "sha256", "status")
-		requireKeys(t, asObject(t, vm["signer"]), "full_name", "order", "total", "status")
-		if vm["can_act"] != (i == 0) {
-			t.Errorf("signer %d can_act = %v", i+1, vm["can_act"])
-		}
+	emailed := s.signingToken(t, "a@x.kz")
+	if emailed != first {
+		t.Fatalf("emailed link differs from the link returned by send")
+	}
+	if len(s.smtp.Messages()) != 1 {
+		t.Fatalf("only signer #1 may be emailed so far, got %d messages", len(s.smtp.Messages()))
 	}
 
-	requireErrorEnvelope(t, s.json(t, "POST", "/api/v1/sign/"+tokens[2]+"/approve", "", nil), 409, "not_your_turn")
+	view := s.json(t, "GET", "/api/v1/sign/"+first, "", nil)
+	expectStatus(t, view, 200)
+	sv := view.object(t)
+	requireKeys(t, sv, "document", "signer", "can_act")
+	requireKeys(t, asObject(t, sv["document"]), "title", "file_name", "size_bytes", "sha256", "status")
+	requireKeys(t, asObject(t, sv["signer"]), "full_name", "order", "total", "status")
+	if sv["can_act"] != true {
+		t.Errorf("signer 1 can_act = %v", sv["can_act"])
+	}
+
 	requireErrorEnvelope(t, s.json(t, "POST", "/api/v1/sign/not-a-real-token/approve", "", nil), 404, "not_found")
 
+	signerEmails := []string{"a@x.kz", "hr@x.kz", "dir@x.kz"}
+	tokens := []string{first}
 	var firstApprove map[string]any
-	for i, tok := range tokens {
+	for i := 0; i < len(signerEmails); i++ {
+		if i > 0 {
+			tokens = append(tokens, s.signingToken(t, signerEmails[i]))
+		}
+		tok := tokens[i]
 		ap := s.json(t, "POST", "/api/v1/sign/"+tok+"/approve", "", nil)
 		expectStatus(t, ap, 200)
 		am := ap.object(t)
 		requireKeys(t, am, "signer_status", "document_status", "signed_at", "seal")
 		requireTimestamp(t, am["signed_at"])
 		wantDoc := "in_progress"
-		if i == len(tokens)-1 {
+		if i == len(signerEmails)-1 {
 			wantDoc = "completed"
 		}
 		if am["signer_status"] != "signed" || am["document_status"] != wantDoc {
@@ -375,6 +447,7 @@ func TestFullLifecycleThenTamper(t *testing.T) {
 			firstApprove = am
 		}
 	}
+	s.waitMail(t, "owner@example.com", "Completed:")
 	again := s.json(t, "POST", "/api/v1/sign/"+tokens[0]+"/approve", "", nil)
 	expectStatus(t, again, 200)
 	am := again.object(t)

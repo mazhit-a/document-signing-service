@@ -8,6 +8,7 @@ import (
 
 	"github.com/mazhit-a/mini-kedo/internal/domain"
 	"github.com/mazhit-a/mini-kedo/internal/integrity"
+	"github.com/mazhit-a/mini-kedo/internal/notify/email"
 	"github.com/mazhit-a/mini-kedo/internal/service"
 	"github.com/mazhit-a/mini-kedo/internal/service/fakes"
 )
@@ -17,17 +18,23 @@ type lifeEnv struct {
 	life     *service.LifecycleService
 	signers  *fakes.Signers
 	notifier *fakes.Notifier
+	mail     *fakes.EmailOutbox
 }
+
+var ownerUser = domain.User{ID: owner, Email: "owner@example.com", FullName: "Olga Owner"}
 
 func newLifeEnv() *lifeEnv {
 	e := newEnv(1 << 20)
 	signers := &fakes.Signers{Docs: e.docs}
 	n := &fakes.Notifier{}
+	mail := &fakes.EmailOutbox{}
+	owners := fakes.Owners{Users: map[string]domain.User{owner: ownerUser}}
 	return &lifeEnv{
 		env:      e,
-		life:     service.NewLifecycleService(e.docs, signers, e.audit, fakes.Tx{}, e.clock, n, "http://web.test/"),
+		life:     service.NewLifecycleService(e.docs, signers, e.audit, fakes.Tx{}, e.clock, n, "http://web.test/").WithEmail(mail, owners),
 		signers:  signers,
 		notifier: n,
+		mail:     mail,
 	}
 }
 
@@ -45,7 +52,7 @@ func (e *lifeEnv) stored(id string) domain.Document {
 	return d
 }
 
-func TestSendDocumentIssuesLinksAndPromotesFirstSigner(t *testing.T) {
+func TestSendDocumentIssuesOnlyFirstLinkAndPromotesFirstSigner(t *testing.T) {
 	e := newLifeEnv()
 	d := e.draft(t)
 
@@ -53,33 +60,27 @@ func TestSendDocumentIssuesLinksAndPromotesFirstSigner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Document.Status != domain.DocumentInProgress || len(res.Links) != 2 {
+	if res.Document.Status != domain.DocumentInProgress || len(res.Links) != 1 {
 		t.Fatalf("unexpected result %+v", res)
 	}
 
 	got := e.stored(d.ID)
-	pending := 0
-	for i, s := range got.Signers {
-		if s.Status == domain.SignerPending {
-			pending++
-		}
-		link := res.Links[i]
-		if link.SignerID != s.ID || link.Order != s.Order {
-			t.Errorf("link %d mismatched signer: %+v vs %+v", i, link, s)
-		}
-		token := strings.TrimPrefix(link.URL, "http://web.test/sign/")
-		if token == link.URL || len(token) < 40 {
-			t.Errorf("bad url %q", link.URL)
-		}
-		if s.TokenHash != integrity.HashToken(token) || s.TokenHash == token {
-			t.Errorf("signer %d: stored hash does not match sha256(token)", i)
-		}
+	link := res.Links[0]
+	if link.SignerID != got.Signers[0].ID || link.Order != 1 {
+		t.Errorf("link mismatched signer: %+v vs %+v", link, got.Signers[0])
 	}
-	if pending != 1 || got.Signers[0].Status != domain.SignerPending {
-		t.Errorf("want exactly signer #1 pending, got %+v", got.Signers)
+	token := strings.TrimPrefix(link.URL, "http://web.test/sign/")
+	if token == link.URL || len(token) < 40 {
+		t.Errorf("bad url %q", link.URL)
 	}
-	if res.Links[0].URL == res.Links[1].URL {
-		t.Error("tokens must be distinct")
+	if got.Signers[0].TokenHash != integrity.HashToken(token) || got.Signers[0].TokenHash == token {
+		t.Error("stored hash does not match sha256(token)")
+	}
+	if got.Signers[1].TokenHash != "" || got.Signers[1].Status != domain.SignerWaiting {
+		t.Errorf("waiting signer must have no token: %+v", got.Signers[1])
+	}
+	if got.Signers[0].Status != domain.SignerPending {
+		t.Errorf("want signer #1 pending, got %+v", got.Signers)
 	}
 
 	last := e.audit.Events[len(e.audit.Events)-1]
@@ -88,6 +89,26 @@ func TestSendDocumentIssuesLinksAndPromotesFirstSigner(t *testing.T) {
 	}
 	if len(e.notifier.Requests) != 1 || e.notifier.Requests[0].SignerID != got.Signers[0].ID {
 		t.Errorf("notifier = %+v", e.notifier.Requests)
+	}
+	if len(e.mail.Messages) != 1 {
+		t.Fatalf("outbox = %+v", e.mail.Messages)
+	}
+	m := e.mail.Messages[0]
+	if m.Kind != email.KindSignerTurn || m.Recipient != got.Signers[0].Email || m.Payload.Link != link.URL ||
+		m.Payload.Position != 1 || m.Payload.Total != 2 || m.Payload.OwnerEmail != ownerUser.Email || m.Payload.DocumentTitle != "Contract" {
+		t.Errorf("outbox message = %+v", m)
+	}
+}
+
+func TestSendDocumentEmailFailureAbortsSend(t *testing.T) {
+	e := newLifeEnv()
+	d := e.draft(t)
+	e.mail.Err = errors.New("outbox down")
+	if _, err := e.life.SendDocument(context.Background(), owner, d.ID); err == nil {
+		t.Fatal("expected error")
+	}
+	if len(e.notifier.Requests) != 0 {
+		t.Error("notifier must only run after commit")
 	}
 }
 

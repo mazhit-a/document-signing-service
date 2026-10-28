@@ -8,12 +8,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/mazhit-a/mini-kedo/internal/auth"
 	"github.com/mazhit-a/mini-kedo/internal/config"
 	"github.com/mazhit-a/mini-kedo/internal/notify"
+	"github.com/mazhit-a/mini-kedo/internal/notify/email"
 	"github.com/mazhit-a/mini-kedo/internal/notify/webhook"
 	"github.com/mazhit-a/mini-kedo/internal/repository/postgres"
 	"github.com/mazhit-a/mini-kedo/internal/service"
@@ -90,11 +92,24 @@ func run() error {
 		postgres.NewAuditRepository(pool),
 		files, txm, clock, service.UUIDGenerator{}, cfg.MaxUploadBytes)
 
+	users := postgres.NewUserRepository(pool)
+	var emailOutbox service.EmailOutbox
+	var emailRepo *postgres.EmailRepository
+	var emailCrypto *email.Crypto
+	if cfg.EmailOutboxEnabled() {
+		emailCrypto, err = email.NewCrypto(cfg.EmailOutboxKey)
+		if err != nil {
+			return err
+		}
+		emailRepo = postgres.NewEmailRepository(pool, txm, emailCrypto, service.UUIDGenerator{}.NewID)
+		emailOutbox = emailRepo
+	}
+
 	lifecycleSvc := service.NewLifecycleService(
 		postgres.NewDocumentRepository(pool, txm),
 		postgres.NewSignerRepository(pool),
 		postgres.NewAuditRepository(pool),
-		txm, clock, notify.NewLogNotifier(logger), cfg.PublicWebURL)
+		txm, clock, notify.NewLogNotifier(logger), cfg.PublicWebURL).WithEmail(emailOutbox, users)
 
 	webhookRepo := postgres.NewWebhookRepository(pool, txm)
 	webhookSvc := service.NewWebhookService(webhookRepo, clock, service.UUIDGenerator{})
@@ -104,7 +119,7 @@ func run() error {
 		postgres.NewSignerRepository(pool),
 		postgres.NewSignatureRepository(pool),
 		postgres.NewAuditRepository(pool),
-		files, txm, clock, service.UUIDGenerator{}, notify.NewLogNotifier(logger), []byte(cfg.SealSecret)).WithOutbox(webhookRepo)
+		files, txm, clock, service.UUIDGenerator{}, notify.NewLogNotifier(logger), []byte(cfg.SealSecret)).WithOutbox(webhookRepo).WithEmail(emailOutbox, users, cfg.PublicWebURL)
 
 	verifySvc := service.NewVerifyService(
 		postgres.NewDocumentRepository(pool, txm),
@@ -141,12 +156,36 @@ func run() error {
 
 	workerCtx, stopWorkers := context.WithCancel(ctx)
 	defer stopWorkers()
-	workersDone := make(chan struct{})
+	var workers sync.WaitGroup
+	workers.Add(1)
 	go func() {
-		defer close(workersDone)
+		defer workers.Done()
 		webhook.NewWorker(webhook.Config{
 			Store: webhookRepo, Workers: cfg.WebhookWorkers, Logger: logger,
 		}).Run(workerCtx)
+	}()
+	if cfg.SMTPConfigured() {
+		sender, err := email.NewSMTPSender(email.SMTPConfig{
+			Host: cfg.SMTPHost, Port: cfg.SMTPPort, User: cfg.SMTPUser, Password: cfg.SMTPPassword, From: cfg.MailFrom,
+		})
+		if err != nil {
+			return err
+		}
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			email.NewWorker(email.WorkerConfig{
+				Store: emailRepo, Sender: sender, Crypto: emailCrypto, Workers: cfg.EmailWorkers, Logger: logger,
+			}).Run(workerCtx)
+		}()
+		logger.Info("email delivery enabled", "smtp_host", cfg.SMTPHost, "smtp_port", cfg.SMTPPort, "workers", cfg.EmailWorkers)
+	} else {
+		logger.Info("email delivery disabled: SMTP_HOST is empty, signing links are not delivered")
+	}
+	workersDone := make(chan struct{})
+	go func() {
+		workers.Wait()
+		close(workersDone)
 	}()
 
 	errCh := make(chan error, 1)
@@ -174,7 +213,7 @@ func run() error {
 	select {
 	case <-workersDone:
 	case <-shutCtx.Done():
-		return fmt.Errorf("shutdown: webhook workers did not stop: %w", shutCtx.Err())
+		return fmt.Errorf("shutdown: background workers did not stop: %w", shutCtx.Err())
 	}
 	logger.Info("stopped")
 	return nil

@@ -43,7 +43,7 @@ make up
 The web UI and API are served at <http://localhost:8081> (override with `WEB_PORT`). A one-shot `seed` service creates a demo owner and a sample document in progress:
 
 - email `hr@demo.kz`, password `S3cure-pass!`
-- the seed output prints the signing links: `docker compose logs seed`
+- the seed output prints the first signer's link: `docker compose logs seed`; later signers' links are emailed when SMTP is configured, otherwise `make outbox` prints them in dev (see [Email](#email-notifications))
 
 `make down` stops the stack; `docker compose down -v` also resets the data.
 
@@ -63,7 +63,7 @@ Go 1.26+ and Node 22 are expected. Tests use a real Postgres through `TEST_DATAB
 
 ## Happy-path walkthrough
 
-Needs `curl` and `jq` and a running stack (`make up`). The walkthrough registers a new owner so it does not collide with the seeded `hr@demo.kz`. Re-running it requires a different email.
+Needs `curl`, `jq`, `make` and Go (for `make outbox`) and a running stack (`make up`). The walkthrough registers a new owner so it does not collide with the seeded `hr@demo.kz`. Re-running it requires a different email.
 
 ```bash
 API=http://localhost:8081/api/v1
@@ -80,15 +80,18 @@ DOC=$(curl -s -X POST $API/documents -H "authorization: Bearer $TOKEN" \
   -F title='Employment contract' -F file=@contract.txt \
   -F 'signers=[{"full_name":"A. Seitov","email":"a@demo.kz"},{"full_name":"HR Manager","email":"m@demo.kz"}]' | jq -r .id)
 
-# 3. Send, then sign with the returned links (shown once)
+# 3. Send: only signer #1 gets a link, shown once. Signer #2 has no token yet.
 LINKS=$(curl -s -X POST $API/documents/$DOC/send -H "authorization: Bearer $TOKEN")
 TOKEN_1=$(echo "$LINKS" | jq -r '.signing_links[0].url | split("/") | last')
-TOKEN_2=$(echo "$LINKS" | jq -r '.signing_links[1].url | split("/") | last')
 
-curl -s -X POST $API/sign/$TOKEN_2/approve | jq    # 409 not_your_turn
-curl -s -X POST $API/sign/$TOKEN_1/approve | jq    # 200, signer 1 signed
-curl -s -X POST $API/sign/$TOKEN_1/approve | jq    # 200, same result (idempotent)
-curl -s -X POST $API/sign/$TOKEN_2/approve | jq    # 200, document completed
+curl -s -X POST $API/sign/not-a-real-token/approve | jq   # 404 not_found
+curl -s -X POST $API/sign/$TOKEN_1/approve | jq           # 200, signer 1 signed
+curl -s -X POST $API/sign/$TOKEN_1/approve | jq           # 200, same result (idempotent)
+
+# 3b. Approving signer 1 issued a fresh token for signer 2 and queued an email.
+# Without SMTP (dev) read the link from the encrypted outbox; with SMTP it arrives by email.
+TOKEN_2=$(make -s outbox | grep m@demo.kz | awk '{print $NF}' | awk -F/ '{print $NF}')
+curl -s -X POST $API/sign/$TOKEN_2/approve | jq           # 200, document completed
 
 # 4. Verify integrity and read the audit log
 curl -s $API/documents/$DOC/verify -H "authorization: Bearer $TOKEN" | jq
@@ -104,7 +107,7 @@ Reject instead of approve with `curl -s -X POST $API/sign/$TOKEN_1/reject -H 'co
 | `POST /auth/register`, `POST /auth/login`, `GET /me` | - / - / owner | Account and JWT |
 | `POST /documents`, `GET /documents` | owner | Upload (multipart) and list with keyset pagination |
 | `GET /documents/{id}`, `/file`, `/events`, `/verify` | owner | Detail, download, audit log, integrity report |
-| `POST /documents/{id}/send`, `/cancel` | owner | Issue links, cancel |
+| `POST /documents/{id}/send`, `/cancel` | owner | Send (returns signer #1's link only), cancel |
 | `GET /sign/{token}`, `/file`; `POST /sign/{token}/approve`, `/reject` | token | Public signing flow |
 | `POST/GET/DELETE /webhooks` | owner | Webhook endpoints |
 | `GET /healthz`, `GET /readyz` | - | Liveness and readiness |
@@ -117,7 +120,9 @@ All errors use `{ "error": { "code", "message", "fields" } }`. A wrong turn is `
 
 **Tamper-evident audit log.** Every event stores `prev_hash` and `hash = SHA256(prev_hash || canonical(type, actor, data, created_at))` per document, starting from 64 zeros. Database triggers reject `UPDATE`/`DELETE` on audit rows and on the document file hash. `verify` walks the chain and reports the first broken event. A hash chain detects edits; someone with full database and secret access could still rewrite the whole chain, so for stronger guarantees the head hash should be anchored externally.
 
-**Signing links.** Tokens are 32 bytes from `crypto/rand`, shown once; only `sha256(token)` is stored, and logs redact them. They stop working once the signer decided or the document is terminal. The public endpoints are rate limited.
+**Signing links (token at turn).** Tokens are 32 bytes from `crypto/rand`; only `sha256(token)` is stored, and logs redact them. A token is issued only when it becomes the signer's turn: `send` issues signer #1's token and returns it once, and approving signer k issues a fresh token for signer k+1 in the same transaction. Signers who are still `waiting` have a `NULL` `token_hash`, so their link cannot exist yet and resolves to `404`. Tokens stop working once the signer decided or the document is terminal. The public endpoints are rate limited.
+
+**Email notifications use an encrypted outbox.** When a signer's turn starts, a `signer_turn` row is inserted into `email_outbox` in the signing transaction; completion and rejection insert `owner_completed` / `owner_rejected` rows for the owner (no email on cancel). A worker pool claims rows with `FOR UPDATE SKIP LOCKED` and sends over SMTP, so a mail outage never rolls back or blocks a signature: the row simply stays `pending` and is retried (10s, 30s, 2m, 10m, 1h; six attempts, then `failed`; permanent 5xx replies are retried the same way). The raw link has to be stored until it is sent, so the row payload is AES-256-GCM ciphertext (random 12-byte nonce, AAD = row id + kind) under a key derived with HKDF-SHA256 from `EMAIL_OUTBOX_KEY`, which is separate from the JWT and seal secrets. The ciphertext is set to `NULL` in the same `UPDATE` that marks the row `sent` or terminally `failed`. Residual risk: until a row is sent, ciphertext sits in the database, so someone with both database access and `EMAIL_OUTBOX_KEY` can read pending links; the window is bounded by the retry schedule (about 73 minutes of cumulative backoff before a row fails). Delivery is at-least-once: a crash between the SMTP server accepting a message and the database update can send it twice. Known limitation: because later signers' raw tokens are never shown to the owner, a signer whose email permanently fails cannot be reached. A reissue endpoint is out of scope for now.
 
 **Concurrency.** Approve and reject lock the document row (`FOR UPDATE`), re-check whose turn it is, and write signature and audit event in one transaction. A parallel-approve test asserts exactly one signature under `-race`. Repeated approves are idempotent.
 
@@ -131,8 +136,26 @@ All errors use `{ "error": { "code", "message", "fields" } }`. A wrong turn is `
 
 ## Configuration
 
-See `.env.example`. Main variables: `APP_ENV`, `DATABASE_URL`, `JWT_SECRET`, `JWT_TTL`, `SEAL_SECRET`, `STORAGE_DIR`, `MAX_UPLOAD_BYTES`, `PUBLIC_WEB_URL`, `CORS_ALLOWED_ORIGIN`, `WEBHOOK_WORKERS`, `TRUST_PROXY`.
+See `.env.example`. Main variables: `APP_ENV`, `DATABASE_URL`, `JWT_SECRET`, `JWT_TTL`, `SEAL_SECRET`, `STORAGE_DIR`, `MAX_UPLOAD_BYTES`, `PUBLIC_WEB_URL`, `CORS_ALLOWED_ORIGIN`, `WEBHOOK_WORKERS`, `TRUST_PROXY`, plus the email settings below.
+
+### Email notifications
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SMTP_HOST` | empty | Empty disables delivery (no worker starts). Gmail: `smtp.gmail.com` |
+| `SMTP_PORT` | `587` | STARTTLS port; the sender refuses to send credentials without STARTTLS |
+| `SMTP_USER` | - | Required when `SMTP_HOST` is set |
+| `SMTP_PASSWORD` | - | Required when `SMTP_HOST` is set (Gmail app password) |
+| `MAIL_FROM` | - | Required when `SMTP_HOST` is set; a plain address such as `you@gmail.com` |
+| `EMAIL_OUTBOX_KEY` | dev placeholder | At least 32 bytes, distinct from `JWT_SECRET` and `SEAL_SECRET`; required and non-placeholder when `SMTP_HOST` is set and `APP_ENV` is not `dev` |
+| `EMAIL_WORKERS` | `2` | Concurrent delivery workers |
+
+Partial SMTP settings (for example a host without user, password or from) make the API fail at startup.
+
+**Gmail app password.** Turn on 2-Step Verification for the Google account, open <https://myaccount.google.com/apppasswords>, create an app password named for this service, and put the 16 characters in `SMTP_PASSWORD` (`SMTP_USER` and `MAIL_FROM` are the Gmail address). Set it in `.env`, which is not committed. Gmail rewrites the sender to the authenticated account.
+
+**Without SMTP.** The log notifier is used, which never logs links, and no email worker runs. In `APP_ENV=dev` the outbox still records each turn, so `make outbox` decrypts and prints the pending links of later signers; outside dev without SMTP the outbox is disabled and later signers' links cannot be obtained. The seeded demo uses `@demo.kz` addresses, so with SMTP configured those emails go nowhere useful.
 
 ## Non-goals
 
-No real ЭЦП, X.509 or eGov integration, no email/SMS delivery (signing links are returned to the owner and logged by a notifier stub), no multi-tenant organisations, no document editing or server-side PDF rendering.
+No real ЭЦП, X.509 or eGov integration, no SMS and no mail provider other than plain SMTP (signer #1's link is returned to the owner, later links are emailed), no multi-tenant organisations, no document editing or server-side PDF rendering.

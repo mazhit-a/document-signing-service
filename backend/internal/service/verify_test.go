@@ -17,7 +17,11 @@ func newVerifier(e *signEnv) *service.VerifyService {
 func completed(t *testing.T) *signEnv {
 	t.Helper()
 	e := newSignEnv(t)
-	for _, tok := range e.tokens {
+	for order := 1; order <= 2; order++ {
+		tok := e.tokens[0]
+		if order > 1 {
+			tok = e.tok(order)
+		}
 		if _, err := e.sign.Approve(context.Background(), tok, meta); err != nil {
 			t.Fatal(err)
 		}

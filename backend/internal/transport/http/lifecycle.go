@@ -22,6 +22,8 @@ func NewLifecycleHandlers(uc LifecycleUseCase) *LifecycleHandlers {
 	return &LifecycleHandlers{uc: uc}
 }
 
+const sendNote = "Only the first signer's link is returned. Each following signer receives a link by email when it becomes their turn."
+
 type signingLinkResponse struct {
 	SignerID string `json:"signer_id"`
 	Order    int    `json:"order"`
@@ -31,6 +33,7 @@ type signingLinkResponse struct {
 
 type sendResponse struct {
 	Status       string                `json:"status"`
+	Note         string                `json:"note"`
 	SigningLinks []signingLinkResponse `json:"signing_links"`
 }
 
@@ -60,7 +63,7 @@ func (h *LifecycleHandlers) Send(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, r, err)
 		return
 	}
-	resp := sendResponse{Status: string(res.Document.Status), SigningLinks: make([]signingLinkResponse, len(res.Links))}
+	resp := sendResponse{Status: string(res.Document.Status), Note: sendNote, SigningLinks: make([]signingLinkResponse, len(res.Links))}
 	for i, l := range res.Links {
 		resp.SigningLinks[i] = signingLinkResponse{SignerID: l.SignerID, Order: l.Order, URL: l.URL, Note: "shown once"}
 	}

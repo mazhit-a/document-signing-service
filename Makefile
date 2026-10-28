@@ -9,7 +9,7 @@ STATICCHECK ?= go run honnef.co/go/tools/cmd/staticcheck@v0.8.2
 
 export POSTGRES_PORT DATABASE_URL PUBLIC_WEB_URL CORS_ALLOWED_ORIGIN
 
-.PHONY: up down db migrate migrate-down seed dev-api dev-web webhook-echo test test-backend test-web lint lint-backend lint-web
+.PHONY: up down db migrate migrate-down seed dev-api dev-web webhook-echo outbox test test-backend test-web lint lint-backend lint-web
 
 up:
 	docker compose up --build -d --wait web
@@ -37,6 +37,9 @@ dev-web:
 
 webhook-echo:
 	cd backend && go run ./cmd/webhook-echo -addr :9000 -secret "$(WEBHOOK_SECRET)"
+
+outbox:
+	cd backend && go run ./cmd/outbox-peek
 
 test: db test-backend test-web
 

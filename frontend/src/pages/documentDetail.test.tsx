@@ -140,7 +140,7 @@ describe('document detail', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
   })
 
-  it('send displays one-time links with a warning and closes on Escape', async () => {
+  it('send displays only the first one-time link with a warning and closes on Escape', async () => {
     let status: DocumentStatus = 'draft'
     mockDoc(() => makeDoc(status))
     server.use(
@@ -148,10 +148,8 @@ describe('document detail', () => {
         status = 'in_progress'
         return HttpResponse.json({
           status: 'in_progress',
-          signing_links: [
-            { signer_id: 's1', order: 1, url: 'http://app/sign/tok1', note: 'shown once' },
-            { signer_id: 's2', order: 2, url: 'http://app/sign/tok2', note: 'shown once' },
-          ],
+          note: 'Only the first signer link is returned.',
+          signing_links: [{ signer_id: 's1', order: 1, url: 'http://app/sign/tok1', note: 'shown once' }],
         })
       }),
     )
@@ -159,10 +157,12 @@ describe('document detail', () => {
     renderApp('/documents/d1')
     await user.click(await screen.findByRole('button', { name: 'Send for signing' }))
 
-    const dialog = await screen.findByRole('dialog', { name: 'Signing links' })
+    const dialog = await screen.findByRole('dialog', { name: 'Signing link' })
     expect(within(dialog).getByText('http://app/sign/tok1')).toBeInTheDocument()
-    expect(within(dialog).getByText('http://app/sign/tok2')).toBeInTheDocument()
+    expect(within(dialog).queryByText('http://app/sign/tok2')).not.toBeInTheDocument()
+    expect(within(dialog).getAllByRole('listitem')).toHaveLength(1)
     expect(within(dialog).getByRole('alert')).toHaveTextContent(/only once/)
+    expect(within(dialog).getByText(/following signer is emailed their link/)).toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: 'Copy link for Alice' })).toBeInTheDocument()
 
     await user.keyboard('{Escape}')
@@ -178,6 +178,7 @@ describe('document detail', () => {
       http.post('*/api/v1/documents/d1/send', () =>
         HttpResponse.json({
           status: 'in_progress',
+          note: 'n',
           signing_links: [{ signer_id: 's1', order: 1, url: 'http://app/sign/t', note: 'shown once' }],
         }),
       ),

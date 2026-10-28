@@ -81,6 +81,7 @@ func TestSendResponseShapeAndNoTokenInLogs(t *testing.T) {
 	}
 	var resp struct {
 		Status string `json:"status"`
+		Note   string `json:"note"`
 		Links  []struct {
 			SignerID string `json:"signer_id"`
 			Order    int    `json:"order"`
@@ -91,8 +92,11 @@ func TestSendResponseShapeAndNoTokenInLogs(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if resp.Status != "in_progress" || len(resp.Links) != 2 || resp.Links[0].Order != 1 || resp.Links[1].Order != 2 {
+	if resp.Status != "in_progress" || len(resp.Links) != 1 || resp.Links[0].Order != 1 {
 		t.Fatalf("unexpected body %s", rec.Body.String())
+	}
+	if !strings.Contains(resp.Note, "by email") {
+		t.Errorf("missing note about later signers: %q", resp.Note)
 	}
 	for _, l := range resp.Links {
 		if !strings.HasPrefix(l.URL, "http://web.test/sign/") || l.Note != "shown once" || l.SignerID == "" {

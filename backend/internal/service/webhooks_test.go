@@ -17,10 +17,11 @@ func TestApproveEnqueuesWebhookEvents(t *testing.T) {
 	e.sign.WithOutbox(outbox)
 	ctx := context.Background()
 
-	for _, tok := range e.tokens {
-		if _, err := e.sign.Approve(ctx, tok, meta); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := e.sign.Approve(ctx, e.tokens[0], meta); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.sign.Approve(ctx, e.tok(2), meta); err != nil {
+		t.Fatal(err)
 	}
 	var got []domain.EventType
 	for _, ev := range outbox.Events {

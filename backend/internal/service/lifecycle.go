@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/mazhit-a/mini-kedo/internal/domain"
@@ -30,13 +29,19 @@ type LifecycleService struct {
 	clock     Clock
 	notifier  notify.Notifier
 	publicURL string
+	mail      emailer
 }
 
 func NewLifecycleService(docs DocumentRepository, signers SignerRepository, audit AuditRepository, tx TxManager, clock Clock, notifier notify.Notifier, publicURL string) *LifecycleService {
 	return &LifecycleService{
 		docs: docs, signers: signers, audit: audit, tx: tx, clock: clock,
-		notifier: notifier, publicURL: strings.TrimRight(publicURL, "/"),
+		notifier: notifier, publicURL: trimBase(publicURL), mail: emailer{publicURL: trimBase(publicURL)},
 	}
+}
+
+func (s *LifecycleService) WithEmail(outbox EmailOutbox, owners OwnerLookup) *LifecycleService {
+	s.mail.outbox, s.mail.owners = outbox, owners
+	return s
 }
 
 func (s *LifecycleService) lockOwned(ctx context.Context, ownerID, id string) (domain.Document, error) {
@@ -64,18 +69,15 @@ func (s *LifecycleService) SendDocument(ctx context.Context, ownerID, id string)
 			return err
 		}
 
-		links := make([]SigningLink, len(doc.Signers))
-		for i, signer := range doc.Signers {
-			token, err := integrity.NewToken()
-			if err != nil {
-				return err
-			}
-			if err := s.signers.SetTokenHash(ctx, signer.ID, integrity.HashToken(token)); err != nil {
-				return err
-			}
-			links[i] = SigningLink{SignerID: signer.ID, Order: signer.Order, URL: s.publicURL + "/sign/" + token}
-		}
 		pending := doc.Signers[0]
+		token, err := integrity.NewToken()
+		if err != nil {
+			return err
+		}
+		if err := s.signers.SetTokenHash(ctx, pending.ID, integrity.HashToken(token)); err != nil {
+			return err
+		}
+		links := []SigningLink{{SignerID: pending.ID, Order: pending.Order, URL: s.mail.signingURL(token)}}
 		if err := s.signers.UpdateStatus(ctx, pending.ID, domain.SignerPending, nil, ""); err != nil {
 			return err
 		}
@@ -85,6 +87,10 @@ func (s *LifecycleService) SendDocument(ctx context.Context, ownerID, id string)
 		if _, err := s.audit.Append(ctx, doc.ID, domain.EventDocumentSent, ownerID, map[string]any{
 			"signer_count": len(doc.Signers),
 		}, now); err != nil {
+			return err
+		}
+
+		if err := s.mail.signerTurn(ctx, doc, pending, links[0].URL, now); err != nil {
 			return err
 		}
 

@@ -13,13 +13,17 @@ export function SendLinksModal({ links, signers, onClose }: SendLinksModalProps)
     signers.find((s) => s.id === link.signer_id)?.full_name ?? `Signer ${link.order}`
 
   return (
-    <Modal title="Signing links" onClose={onClose}>
+    <Modal title="Signing link" onClose={onClose}>
       <p
         role="alert"
         className="mt-2 rounded border border-amber-500 bg-amber-50 p-2 text-sm text-amber-900"
       >
-        Warning: these links are shown only once. Copy them now and send each to its signer.
-        They cannot be shown again.
+        Warning: this link is shown only once. Copy it now and send it to the first signer. It
+        cannot be shown again.
+      </p>
+      <p className="mt-2 text-sm text-slate-700">
+        Only the first signer&apos;s link is shown. Each following signer is emailed their link
+        when it becomes their turn.
       </p>
       <ol className="mt-3 space-y-3">
         {links.map((link) => (
@@ -40,7 +44,7 @@ export function SendLinksModal({ links, signers, onClose }: SendLinksModalProps)
           onClick={onClose}
           className="rounded bg-blue-700 px-3 py-1 text-sm font-medium text-white hover:bg-blue-800"
         >
-          I have copied the links
+          I have copied the link
         </button>
       </div>
     </Modal>

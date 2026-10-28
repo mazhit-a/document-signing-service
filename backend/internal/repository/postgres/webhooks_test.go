@@ -125,8 +125,8 @@ func TestSigningEnqueuesOnlyWebhookEventsForActiveEndpointsOfOwner(t *testing.T)
 	r.endpoint(t, stranger.ID, "http://hook.test/stranger", true)
 	svc := r.signing(r.audit).WithOutbox(r.webhooks())
 
-	for _, tok := range tokens {
-		if _, err := svc.Approve(ctx, tok, service.ClientMeta{}); err != nil {
+	for order := 1; order <= 2; order++ {
+		if _, err := svc.Approve(ctx, tokens.get(order), service.ClientMeta{}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -168,7 +168,7 @@ func TestRejectEnqueuesDocumentRejectedOnly(t *testing.T) {
 	r.endpoint(t, owner.ID, "http://hook.test", true)
 	svc := r.signing(r.audit).WithOutbox(r.webhooks())
 
-	if _, err := svc.Reject(ctx, tokens[0], "no"); err != nil {
+	if _, err := svc.Reject(ctx, tokens.get(1), "no"); err != nil {
 		t.Fatal(err)
 	}
 	if n := r.count(t, `SELECT count(*) FROM webhook_deliveries w JOIN audit_events a ON a.id = w.event_id WHERE a.type = 'document.rejected'`); n != 1 {
@@ -186,7 +186,7 @@ func TestSigningRollbackLeavesNoDelivery(t *testing.T) {
 	r.endpoint(t, owner.ID, "http://hook.test", true)
 	svc := r.signing(r.audit).WithOutbox(failingOutbox{r.webhooks()})
 
-	if _, err := svc.Approve(ctx, tokens[0], service.ClientMeta{}); err == nil {
+	if _, err := svc.Approve(ctx, tokens.get(1), service.ClientMeta{}); err == nil {
 		t.Fatal("expected failure")
 	}
 	if n := r.count(t, `SELECT count(*) FROM webhook_deliveries`); n != 0 {

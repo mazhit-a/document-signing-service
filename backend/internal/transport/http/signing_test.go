@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mazhit-a/mini-kedo/internal/auth"
+	"github.com/mazhit-a/mini-kedo/internal/domain"
 	"github.com/mazhit-a/mini-kedo/internal/notify"
 	"github.com/mazhit-a/mini-kedo/internal/service"
 	"github.com/mazhit-a/mini-kedo/internal/service/fakes"
@@ -20,6 +21,15 @@ type signHTTP struct {
 	docID  string
 	tokens []string
 	sigs   *fakes.Signatures
+	mail   *fakes.EmailOutbox
+}
+
+func (s *signHTTP) tok(order int) string {
+	link, ok := s.mail.TurnLink(order)
+	if !ok {
+		return ""
+	}
+	return strings.TrimPrefix(link, "http://web.test/sign/")
 }
 
 func newSignHTTP(t *testing.T) *signHTTP {
@@ -37,9 +47,11 @@ func newSignHTTP(t *testing.T) *signHTTP {
 	ids := &fakes.SeqIDs{}
 	logger := testLogger(&bytes.Buffer{})
 	docSvc := service.NewDocumentService(docs, sigs, audit, files, fakes.Tx{}, clock, ids, maxUp)
-	life := service.NewLifecycleService(docs, signers, audit, fakes.Tx{}, clock, notify.Noop{}, "http://web.test")
+	mail := &fakes.EmailOutbox{}
+	owners := fakes.Owners{Users: map[string]domain.User{ownerA: {ID: ownerA, Email: "a@owner.test", FullName: "Owner A"}}}
+	life := service.NewLifecycleService(docs, signers, audit, fakes.Tx{}, clock, notify.Noop{}, "http://web.test").WithEmail(mail, owners)
 	seal := []byte("0123456789abcdef0123456789abcdef")
-	sign := service.NewSigningService(docs, signers, sigs, audit, files, fakes.Tx{}, clock, ids, notify.Noop{}, seal)
+	sign := service.NewSigningService(docs, signers, sigs, audit, files, fakes.Tx{}, clock, ids, notify.Noop{}, seal).WithEmail(mail, owners, "http://web.test")
 	verify := service.NewVerifyService(docs, sigs, audit, files, fakes.Tx{}, clock, seal)
 	h := NewRouter(Options{
 		Logger: logger, CORSAllowedOrigin: "http://x", MaxBodyBytes: maxUp + multipartOverhead,
@@ -48,7 +60,7 @@ func newSignHTTP(t *testing.T) *signHTTP {
 	a, _ := tokens.Issue(ownerA)
 	b, _ := tokens.Issue(ownerB)
 	e := &docEnv{h: h, clock: clock, tokA: "Bearer " + a, tokB: "Bearer " + b, files: files}
-	s := &signHTTP{docEnv: e, sigs: sigs}
+	s := &signHTTP{docEnv: e, sigs: sigs, mail: mail}
 	s.docID = createDraft(t, e)
 	rec := e.postEmpty("/api/v1/documents/"+s.docID+"/send", e.tokA)
 	var resp struct {
@@ -59,9 +71,10 @@ func newSignHTTP(t *testing.T) *signHTTP {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	for _, l := range resp.Links {
-		s.tokens = append(s.tokens, strings.TrimPrefix(l.URL, "http://web.test/sign/"))
+	if len(resp.Links) != 1 {
+		t.Fatalf("send returned %d links, want 1", len(resp.Links))
 	}
+	s.tokens = []string{strings.TrimPrefix(resp.Links[0].URL, "http://web.test/sign/")}
 	return s
 }
 
@@ -116,15 +129,14 @@ func TestSignViewShape(t *testing.T) {
 		t.Errorf("leaks other signer data: %s", rec.Body.String())
 	}
 
-	v2 := s.do("GET", "/api/v1/sign/"+s.tokens[1], "")
-	if !strings.Contains(v2.Body.String(), `"can_act":false`) {
-		t.Errorf("waiting signer: %s", v2.Body.String())
+	if s.tok(2) != "" {
+		t.Error("waiting signer must not have a link yet")
 	}
 }
 
 func TestSignFileDownload(t *testing.T) {
 	s := newSignHTTP(t)
-	rec := s.do("GET", "/api/v1/sign/"+s.tokens[1]+"/file", "")
+	rec := s.do("GET", "/api/v1/sign/"+s.tokens[0]+"/file", "")
 	if rec.Code != 200 || rec.Header().Get("Content-Type") != "application/pdf" || !strings.HasPrefix(rec.Body.String(), "%PDF-1.4") {
 		t.Fatalf("%d %v", rec.Code, rec.Header())
 	}
@@ -161,11 +173,12 @@ func TestSignApproveFlowAndIdempotency(t *testing.T) {
 		t.Errorf("repeat: %d %s", again.Code, again.Body.String())
 	}
 
-	last := s.do("POST", "/api/v1/sign/"+s.tokens[1]+"/approve", "")
+	second := s.tok(2)
+	last := s.do("POST", "/api/v1/sign/"+second+"/approve", "")
 	if last.Code != 200 || !strings.Contains(last.Body.String(), `"document_status":"completed"`) {
 		t.Errorf("last: %d %s", last.Code, last.Body.String())
 	}
-	view := s.do("GET", "/api/v1/sign/"+s.tokens[1], "")
+	view := s.do("GET", "/api/v1/sign/"+second, "")
 	if !strings.Contains(view.Body.String(), `"can_act":false`) {
 		t.Errorf("view after completion: %s", view.Body.String())
 	}
@@ -176,11 +189,8 @@ func TestSignApproveFlowAndIdempotency(t *testing.T) {
 
 func TestSignMatrix(t *testing.T) {
 	s := newSignHTTP(t)
-	if rec := s.do("POST", "/api/v1/sign/"+s.tokens[1]+"/approve", ""); rec.Code != 409 || errCode(rec) != "not_your_turn" {
-		t.Errorf("waiting approve: %d %s", rec.Code, rec.Body.String())
-	}
-	if rec := s.do("POST", "/api/v1/sign/"+s.tokens[1]+"/reject", `{"reason":"x"}`); rec.Code != 409 || errCode(rec) != "not_your_turn" {
-		t.Errorf("waiting reject: %d %s", rec.Code, rec.Body.String())
+	if s.tok(2) != "" {
+		t.Error("waiting signer must have no link before its turn")
 	}
 	for _, p := range []string{"", "/file", "/approve", "/reject"} {
 		method := "POST"
@@ -243,7 +253,11 @@ func TestSignCancelledTokensAre404(t *testing.T) {
 
 func TestVerifyEndpoint(t *testing.T) {
 	s := newSignHTTP(t)
-	for _, tok := range s.tokens {
+	for order := 1; order <= 2; order++ {
+		tok := s.tokens[0]
+		if order > 1 {
+			tok = s.tok(order)
+		}
 		if rec := s.do("POST", "/api/v1/sign/"+tok+"/approve", ""); rec.Code != 200 {
 			t.Fatalf("approve: %d %s", rec.Code, rec.Body.String())
 		}

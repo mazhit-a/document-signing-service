@@ -13,6 +13,7 @@ import (
 	"github.com/mazhit-a/mini-kedo/internal/domain"
 	"github.com/mazhit-a/mini-kedo/internal/integrity"
 	"github.com/mazhit-a/mini-kedo/internal/notify"
+	"github.com/mazhit-a/mini-kedo/internal/notify/email"
 	"github.com/mazhit-a/mini-kedo/internal/service"
 	"github.com/mazhit-a/mini-kedo/internal/storage"
 )
@@ -378,4 +379,53 @@ func (w *WebhookEndpoints) Delete(_ context.Context, ownerID, id string) error {
 		}
 	}
 	return domain.ErrNotFound
+}
+
+type EmailOutbox struct {
+	mu       sync.Mutex
+	Messages []email.Outgoing
+	Err      error
+}
+
+func (o *EmailOutbox) Enqueue(_ context.Context, msg email.Outgoing) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.Err != nil {
+		return o.Err
+	}
+	o.Messages = append(o.Messages, msg)
+	return nil
+}
+
+func (o *EmailOutbox) Kinds() []email.Kind {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	var out []email.Kind
+	for _, m := range o.Messages {
+		out = append(out, m.Kind)
+	}
+	return out
+}
+
+func (o *EmailOutbox) TurnLink(position int) (string, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for _, m := range o.Messages {
+		if m.Kind == email.KindSignerTurn && m.Payload.Position == position {
+			return m.Payload.Link, true
+		}
+	}
+	return "", false
+}
+
+type Owners struct {
+	Users map[string]domain.User
+}
+
+func (o Owners) GetByID(_ context.Context, id string) (domain.User, error) {
+	u, ok := o.Users[id]
+	if !ok {
+		return domain.User{}, domain.ErrNotFound
+	}
+	return u, nil
 }

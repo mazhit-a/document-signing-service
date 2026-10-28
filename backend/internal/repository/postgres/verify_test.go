@@ -54,10 +54,10 @@ func completedForVerify(t *testing.T) *verifyEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sign := service.NewSigningService(r.documents, r.signers, r.signatures, r.audit, files, r.tx, service.SystemClock{}, service.UUIDGenerator{}, notify.Noop{}, testSealSecret)
-	for _, l := range res.Links {
-		tok := l.URL[len("http://web.test/sign/"):]
-		if _, err := sign.Approve(ctx, tok, service.ClientMeta{IP: "203.0.113.7", UserAgent: "t"}); err != nil {
+	sign := service.NewSigningService(r.documents, r.signers, r.signatures, r.audit, files, r.tx, service.SystemClock{}, service.UUIDGenerator{}, notify.Noop{}, testSealSecret).WithEmail(r.email, r.users, "http://web.test")
+	tokens := tokenSet{r: r, docID: d.ID, first: res.Links[0].URL[len("http://web.test/sign/"):]}
+	for order := 1; order <= 2; order++ {
+		if _, err := sign.Approve(ctx, tokens.get(order), service.ClientMeta{IP: "203.0.113.7", UserAgent: "t"}); err != nil {
 			t.Fatal(err)
 		}
 	}

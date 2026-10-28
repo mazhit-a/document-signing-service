@@ -44,6 +44,7 @@ type SigningService struct {
 	notifier   notify.Notifier
 	sealSecret []byte
 	outbox     WebhookOutbox
+	mail       emailer
 }
 
 func NewSigningService(docs DocumentRepository, signers SignerRepository, signatures SignatureRepository, audit AuditRepository, files storage.FileStorage, tx TxManager, clock Clock, ids IDGenerator, notifier notify.Notifier, sealSecret []byte) *SigningService {
@@ -55,6 +56,11 @@ func NewSigningService(docs DocumentRepository, signers SignerRepository, signat
 
 func (s *SigningService) WithOutbox(outbox WebhookOutbox) *SigningService {
 	s.outbox = outbox
+	return s
+}
+
+func (s *SigningService) WithEmail(outbox EmailOutbox, owners OwnerLookup, publicURL string) *SigningService {
+	s.mail = emailer{outbox: outbox, owners: owners, publicURL: trimBase(publicURL)}
 	return s
 }
 
@@ -180,6 +186,9 @@ func (s *SigningService) Approve(ctx context.Context, token string, meta ClientM
 			}, now); err != nil {
 				return err
 			}
+			if err := s.mail.ownerCompleted(ctx, doc, now); err != nil {
+				return err
+			}
 		} else {
 			if err := s.signers.UpdateStatus(ctx, res.NextSignerID, domain.SignerPending, nil, ""); err != nil {
 				return err
@@ -191,10 +200,21 @@ func (s *SigningService) Approve(ctx context.Context, token string, meta ClientM
 			if err != nil {
 				return err
 			}
+			nextToken, err := integrity.NewToken()
+			if err != nil {
+				return err
+			}
+			if err := s.signers.SetTokenHash(ctx, following.ID, integrity.HashToken(nextToken)); err != nil {
+				return err
+			}
+			link := s.mail.signingURL(nextToken)
+			if err := s.mail.signerTurn(ctx, doc, *following, link, now); err != nil {
+				return err
+			}
 			next = &notify.SigningRequest{
 				DocumentID: doc.ID, DocumentTitle: doc.Title,
 				SignerID: following.ID, SignerName: following.FullName, SignerEmail: following.Email,
-				Order: following.Order,
+				Order: following.Order, URL: link,
 			}
 		}
 
@@ -240,6 +260,9 @@ func (s *SigningService) Reject(ctx context.Context, token, reason string) (Deci
 		if err := s.record(ctx, doc.ID, domain.EventDocumentRejected, signer.ID, map[string]any{
 			"signer_id": signer.ID,
 		}, now); err != nil {
+			return err
+		}
+		if err := s.mail.ownerRejected(ctx, doc, signer, stored.RejectReason, now); err != nil {
 			return err
 		}
 		result = DecisionResult{SignerStatus: domain.SignerRejected, DocumentStatus: doc.Status, SignedAt: now}

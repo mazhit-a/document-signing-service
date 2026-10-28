@@ -11,6 +11,7 @@ import (
 
 	"github.com/mazhit-a/mini-kedo/internal/domain"
 	"github.com/mazhit-a/mini-kedo/internal/integrity"
+	"github.com/mazhit-a/mini-kedo/internal/notify/email"
 	"github.com/mazhit-a/mini-kedo/internal/repository/postgres"
 	"github.com/mazhit-a/mini-kedo/internal/repository/postgres/pgtest"
 	"github.com/mazhit-a/mini-kedo/internal/service"
@@ -22,6 +23,8 @@ var (
 	_ service.SignerRepository    = (*postgres.SignerRepository)(nil)
 	_ service.SignatureRepository = (*postgres.SignatureRepository)(nil)
 	_ service.AuditRepository     = (*postgres.AuditRepository)(nil)
+	_ service.EmailOutbox         = (*postgres.EmailRepository)(nil)
+	_ email.Store                 = (*postgres.EmailRepository)(nil)
 )
 
 type repos struct {
@@ -32,13 +35,23 @@ type repos struct {
 	signers    *postgres.SignerRepository
 	signatures *postgres.SignatureRepository
 	audit      *postgres.AuditRepository
+	email      *postgres.EmailRepository
+	crypto     *email.Crypto
 }
+
+const testOutboxKey = "outbox-test-key-0123456789abcdef-xyz"
 
 func newRepos(t *testing.T) *repos {
 	t.Helper()
 	db := pgtest.New(t)
 	tx := postgres.NewTxManager(db.Pool)
+	crypto, err := email.NewCrypto(testOutboxKey)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return &repos{
+		email:      postgres.NewEmailRepository(db.Pool, tx, crypto, service.UUIDGenerator{}.NewID),
+		crypto:     crypto,
 		db:         db,
 		tx:         tx,
 		users:      postgres.NewUserRepository(db.Pool),

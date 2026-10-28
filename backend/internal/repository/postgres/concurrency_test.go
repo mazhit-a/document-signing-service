@@ -57,16 +57,23 @@ func TestParallelApprovesBySignersInOrder(t *testing.T) {
 	svc := r.signing(r.audit)
 
 	deadline := time.Now().Add(20 * time.Second)
-	errs := make([]error, len(tokens))
+	const signers = 4
+	errs := make([]error, signers)
 	var wg sync.WaitGroup
 	start := make(chan struct{})
-	for i := len(tokens) - 1; i >= 0; i-- {
+	for i := signers - 1; i >= 0; i-- {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			<-start
 			for {
-				_, err := svc.Approve(ctx, tokens[i], service.ClientMeta{})
+				tok := tokens.get(i + 1)
+				var err error
+				if tok == "" {
+					err = domain.ErrNotYourTurn
+				} else {
+					_, err = svc.Approve(ctx, tok, service.ClientMeta{})
+				}
 				if !errors.Is(err, domain.ErrNotYourTurn) || time.Now().After(deadline) {
 					errs[i] = err
 					return
@@ -88,7 +95,7 @@ func TestParallelApprovesBySignersInOrder(t *testing.T) {
 		t.Fatalf("document = %+v", got)
 	}
 	sigs, err := r.signatures.ListByDocument(ctx, d.ID)
-	if err != nil || len(sigs) != len(tokens) {
+	if err != nil || len(sigs) != signers {
 		t.Fatalf("signatures = %d, %v", len(sigs), err)
 	}
 	for i, s := range sigs {
@@ -104,7 +111,7 @@ func TestParallelApprovesBySignersInOrder(t *testing.T) {
 		}
 	}
 	events := r.assertChainValid(t, d.ID)
-	if countEvents(events, domain.EventSignerApproved) != len(tokens) || countEvents(events, domain.EventDocumentCompleted) != 1 {
+	if countEvents(events, domain.EventSignerApproved) != signers || countEvents(events, domain.EventDocumentCompleted) != 1 {
 		t.Errorf("events = %+v", events)
 	}
 }
@@ -147,8 +154,8 @@ func TestConcurrentSendProducesOneSend(t *testing.T) {
 	if got.Status != domain.DocumentInProgress {
 		t.Errorf("status = %s", got.Status)
 	}
-	if c := r.countWhere(t, `SELECT count(*) FROM signers WHERE document_id = $1::uuid AND token_hash IS NOT NULL`, d.ID); c != 3 {
-		t.Errorf("token hashes = %d, want 3", c)
+	if c := r.countWhere(t, `SELECT count(*) FROM signers WHERE document_id = $1::uuid AND token_hash IS NOT NULL`, d.ID); c != 1 {
+		t.Errorf("token hashes = %d, want 1", c)
 	}
 	events := r.assertChainValid(t, d.ID)
 	if countEvents(events, domain.EventDocumentSent) != 1 {
@@ -216,7 +223,7 @@ func TestConcurrentCancelAndApproveStayConsistent(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		<-start
-		_, approveErr = svc.Approve(ctx, tokens[0], service.ClientMeta{})
+		_, approveErr = svc.Approve(ctx, tokens.get(1), service.ClientMeta{})
 	}()
 	go func() {
 		defer wg.Done()
@@ -247,7 +254,9 @@ func TestConcurrentCancelAndApproveStayConsistent(t *testing.T) {
 	if last := events[len(events)-1]; last.Type != domain.EventDocumentCancelled {
 		t.Errorf("last event = %s", last.Type)
 	}
-	if _, err := svc.Approve(ctx, tokens[1], service.ClientMeta{}); err == nil {
-		t.Error("second signer must not be able to sign a cancelled document")
+	if tok := tokens.get(2); tok != "" {
+		if _, err := svc.Approve(ctx, tok, service.ClientMeta{}); err == nil {
+			t.Error("second signer must not be able to sign a cancelled document")
+		}
 	}
 }
